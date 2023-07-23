@@ -458,7 +458,7 @@ void readSensors(float z[])
   lambda = map(analogRead(lambdaPin), 0, 1023, 0.5, 1.5);
   
   // Read the cam sensor using an interrupt and calculate the RPM based on the cam period
-  attachInterrupt(digitalPinToInterrupt(camPin), camISR, RISING); // Attach an interrupt to the cam sensor pin on the rising edge
+  // TODO: synchronize with interrupts f.e.using semaphore 
   rpm = 60000000 / camPeriod; // Calculate RPM in revolutions per minute based on the cam period in microseconds
   
   // Store the measurements in the measurement vector
@@ -590,7 +590,7 @@ void setup()
   pinMode(lambdaPin, INPUT); // Set the lambda probe pin as an input
   pinMode(camPin, INPUT_PULLUP); // Set the cam sensor pin as an input with a pull-up resistor
   pinMode(injectorPin, OUTPUT); // Set the injector pin as an output
-  
+  attachInterrupt(digitalPinToInterrupt(camPin), camISR, RISING); // Attach an interrupt to the cam sensor pin on the rising edge
   runKalmanFilter(); // Run the Kalman filter algorithm
 }
 
@@ -598,4 +598,8 @@ void setup()
 void loop()
 {
   // Nothing to do here since everything is done in the runKalmanFilter function
+// TODO : make it run on interrupt.
+// TODO : increasing and decreasing process noise basing on
+  // process noise forecast by using sensors as predictors 
+
 }
