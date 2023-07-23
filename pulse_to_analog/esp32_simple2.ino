@@ -1,3 +1,13 @@
+// this code simply converts pulses to 16bit analog output
+// It allows to use much simpler, not time-bound circuits or uC's
+// to visualize pulse width,apply corrections, calculate error etc. 
+// it uses ESP32 with hardware DAC and resistor ladder or offset op-amp 
+// to produce 16bit resolution output
+// this should be enough for max 65ms with 0.001 ms resolution
+// which is good enough given sum of all four injectors will produce average 
+
+#define MIN_PULSE_WIDTH 0
+#define MAX_PULSE_WIDTH 20*1000 //in micros
 // Define the pins for the injector and the DACs
 #define INJECTOR_PIN 2 // The pin connected to the injector signal
 #define DAC1_PIN 25 // The pin connected to the LSB DAC
@@ -20,7 +30,8 @@ void ICACHE_RAM_ATTR measurePulse() {
     pulseStart = micros(); // Record the start time of the pulse
   } else { // If the injector signal is low, stop measuring
     pulseWidth = micros() - pulseStart; // Calculate the width of the pulse
-    dacValue = map(pulseWidth, 0, 20000, 0, (1 << (2 * DAC_RESOLUTION)) - 1); // Map the pulse width to the DAC range
+    pulseWidth = constrain(pulseWidth,MIN_PULSE_WIDTH,MAX_PULSE_WIDTH); // constrain the pulse width within defined limits
+    dacValue = map(pulseWidth, MIN_PULSE_WIDTH, MAX_PULSE_WIDTH, 0, (1 << (2 * DAC_RESOLUTION)) - 1); // Map the pulse width to the DAC range
     dac1Value = dacValue & ((1 << DAC_RESOLUTION) - 1); // Extract the LSB bits of the DAC value
     dac2Value = (dacValue >> DAC_RESOLUTION) & ((1 << DAC_RESOLUTION) - 1); // Extract the MSB bits of the DAC value
     dacWrite(DAC1_PIN, dac1Value); // Write the LSB bits to the LSB DAC
