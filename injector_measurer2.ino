@@ -36,6 +36,7 @@ float map; // MAP in kPa
 float lambda; // Lambda value
 float rpm; // RPM in revolutions per minute
 float pulseWidth; // Pulse width in milliseconds
+uint32_t pulseWidthISR; // Pulse width in microseconds
 
 // Define some variables for the cam sensor interrupt
 volatile unsigned long lastCamTime = 0; // Last time the cam sensor triggered in microseconds
@@ -300,8 +301,8 @@ void update(float x[], float P[][N], float z[])
 // Define a function to measure the actual pulse width of the injector using an interrupt
 void measureInjectorPulseWidth()
 {
-  attachInterrupt(digitalPinToInterrupt(injectorPin), injectorISR, CHANGE); // Attach an interrupt to the injector pin on both edges
-  pulseWidth = (injectorOffTime - injectorOnTime) / 1000.0; // Calculate the pulse width in milliseconds based on the injector on and off times in microseconds
+  //TODO sync with interrupts 
+  pulseWidth = pulseWidthISR/ 1000.0; // Calculate the pulse width in milliseconds based on the injector on and off times in microseconds
 }
 
 // Define a function to handle the injector interrupt
@@ -316,6 +317,7 @@ void injectorISR()
   else // If the injector pin is low
   {
     injectorOffTime = currentInjectorTime; // Update the injector off time to the current time
+    pulseWidthISR = (injectorOffTime - injectorOnTime) // Calculate the pulse width in micros based on the injector on and off times in microseconds and double buffer to reduce chances of glitches
   }
 }
 
@@ -378,4 +380,10 @@ void adjustProcessNoise(float x[], float Q[][N], float z[])
   previousMp = mp;
   previousLam = lam;
   previousRpm = rpm;
+}
+
+// Setup function to set up interrupts and other things 
+
+void setup() {
+  attachInterrupt(digitalPinToInterrupt(injectorPin), injectorISR, CHANGE); // Attach an interrupt to the injector pin on both edges
 }
