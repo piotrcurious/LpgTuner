@@ -6,7 +6,9 @@ int throttlePin = A0; // Throttle position sensor pin
 int mapPin = A1; // MAP sensor pin
 int lambdaPin = A2; // Lambda probe pin
 int camPin = 2; // Cam sensor pin
-int injectorPin = 3; // Injector pin
+int injectorPin = 3; // Injector input pin
+int injectorGaugePin = 9 ; // Injector timing analog gauge
+    // change to PWM capable pin in case of esp32
 
 // Define some variables for the sensors and the injector
 float throttle; // Throttle position in percentage
@@ -14,6 +16,7 @@ float map; // MAP in kPa
 float lambda; // Lambda value
 float rpm; // RPM in revolutions per minute
 float pulseWidth; // Pulse width in milliseconds
+float pulseWidthGfx; // Pulse width for gfx routine 
 
 // Define some variables for the cam sensor interrupt
 volatile unsigned long lastCamTime = 0; // Last time the cam sensor triggered in microseconds
@@ -46,8 +49,12 @@ void setup()
   pinMode(mapPin, INPUT); // Set the MAP sensor pin as an input
   pinMode(lambdaPin, INPUT); // Set the lambda probe pin as an input
   pinMode(camPin, INPUT_PULLUP); // Set the cam sensor pin as an input with a pull-up resistor
-  pinMode(injectorPin, OUTPUT); // Set the injector pin as an output
-  
+  pinMode(injectorPin, INPUT); // Set the injector pin as an input
+  pinMode(injectorGaugePin, OUTPUT); // Set the injector gauge pin as an output
+
+  attachInterrupt(digitalPinToInterrupt(camPin), camISR, RISING); // Attach an interrupt to the cam sensor pin on the rising edge
+  attachInterrupt(digitalPinToInterrupt(injectorPin), injectorISR, CHANGE); // Attach an interrupt to the injector pin on both edges
+ 
   BlueDisplay1.initCommunication(&initDisplay, &drawGui); // Initialize communication with BlueDisplay app
   
 }
@@ -108,20 +115,18 @@ void readSensors()
   lambda = map(analogRead(lambdaPin), 0, 1023, 0.5, 1.5);
   
   // Read the cam sensor using an interrupt and calculate the RPM based on the cam period
-  attachInterrupt(digitalPinToInterrupt(camPin), camISR, RISING); // Attach an interrupt to the cam sensor pin on the rising edge
   rpm = 60000000 / camPeriod; // Calculate RPM in revolutions per minute based on the cam period in microseconds
 }
 
 void measureInjectorPulseWidth()
 {
-  attachInterrupt(digitalPinToInterrupt(injectorPin), injectorISR, CHANGE); // Attach an interrupt to the injector pin on both edges
-  pulseWidth = (injectorOffTime - injectorOnTime) / 1000.0; // Calculate the pulse width in milliseconds based on the injector on and off times in microseconds
+  pulseWidthGfx = PulseWidth / 1000.0; // Calculate the pulse width in milliseconds based on the injector on and off times in microseconds
 }
 
-void controlInjector()
+void controlInjectorGauge()
 {
-  // Control the injector using PWM with a frequency of 100 Hz and a duty cycle proportional to the pulse width
-  analogWrite(injectorPin, map(pulseWidth, 0, 10, 0, 255)); // Map the pulse width to a value between 0 and 255 and write it to the injector pin using PWM
+  // Control the injector gauge using PWM with a frequency of 100 Hz and a duty cycle proportional to the pulse width
+  analogWrite(injectorGaugePin, map(pulseWidth, 0, 10, 0, 255)); // Map the pulse width to a value between 0 and 255 and write it to the injector pin using PWM
 }
 
 void drawChart()
@@ -181,5 +186,7 @@ void injectorISR()
   else // If the injector pin is low
   {
     injectorOffTime = currentInjectorTime; // Update the injector off time to the current time
+    pulseWidth = (injectorOffTime - injectorOnTime)
   }
+
 }
