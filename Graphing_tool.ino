@@ -1,3 +1,11 @@
+//Created by Bing AI
+// This is simple map plotting tool to aid in emgine tuning
+// it assumes fairly low resolution display
+// it plots injection times on a rpm/load map
+// varying color of the dot depending on injection time
+// theoretically it will work on Arduino uno
+// but esp32 or another fast uC is recommended 
+
 // Include the bluedisplay library
 #include "BlueDisplay.hpp"
 
