@@ -1,42 +1,4 @@
-OK, I will continue with the Arduino code for measuring injector pulse width and correcting it using the Kalman filter. 😊
 
-Here is the rest of the code:
-
-```c
-  // Check if the difference between the predicted and measured pulse width is larger than the threshold
-  if (abs(pw - pulseWidth) > pwThreshold)
-  {
-    // Increase the process noise variance by a factor
-    Q[0][0] = Q[0][0] * (1 + increaseFactor);
-  }
-  
-  // Check if the difference between the current and previous measurements of MAP is larger than the threshold
-  if (abs(mp - previousMp) > mpThreshold)
-  {
-    // Increase the process noise variance by a factor
-    Q[0][0] = Q[0][0] * (1 + increaseFactor);
-  }
-  
-  // Check if the difference between the current and previous measurements of lambda value is larger than the threshold
-  if (abs(lam - previousLam) > lamThreshold)
-  {
-    // Increase the process noise variance by a factor
-    Q[0][0] = Q[0][0] * (1 + increaseFactor);
-  }
-  
-  // Check if the difference between the current and previous measurements of RPM is larger than the threshold
-  if (abs(rpm - previousRpm) > rpmThreshold)
-  {
-    // Increase the process noise variance by a factor
-    Q[0][0] = Q[0][0] * (1 + increaseFactor);
-  }
-  
-  // Update the previous measurements of MAP, lambda value, and RPM
-  previousMp = mp;
-  previousLam = lam;
-  previousRpm = rpm;
-}
-```
 
 This is how I modified the code:
 
