@@ -35,7 +35,8 @@ Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 
 // Declare a global variable to store the rolling buffer for pulse length
 uint32_t rollingBuffer[ROLLING_SIZE];
-
+uint32_t graphMin = 0;
+uint32_t graphMax = 0;
 // Declare a global variable to store the rolling buffer index
 uint8_t rollingIndex = 0;
 
@@ -106,7 +107,20 @@ void handlePacket(AsyncUDPPacket packet) {
     Serial.println(pulseData.length[i]);
 
     //Roll the rolling buffer.
-    
+    // Shift the graph data to the left by one pixel and find the maximum value
+  graphMin = graphMax; // set graphMin to last graphMax value
+  graphMax = 0;
+  for (int i = 0; i < ROLLING_SIZE - 1; i++) {
+    rollingBuffer[i] = rollingBuffer[i + 1];
+    if (rollingBuffer[i] > graphMax) {
+      graphMax = rollingBuffer[i];
+      }
+    if (rollingBuffer[i] < graphMin) {
+      graphMin = rollingBuffer[i];
+    }
+    // graphMax = max(graphMax, graphData[i]); 
+    // or use that instead 
+  }
     // Add the pulse length to the rolling buffer
     rollingBuffer[ROLLING_SIZE-1] = pulseData.length[i];
 
