@@ -5,6 +5,9 @@
 #define OLED_HEIGHT 64 // OLED display height, in pixels
 #define OLED_ADDRESS 0x3C // OLED display I2C address
 
+//#define GRAPH_LINE
+#define GRAPH_BARS
+
 // Include the necessary libraries
 #include <Arduino.h>
 #include <WiFi.h>
@@ -134,21 +137,28 @@ void drawGraph() {
   // Clear the display
   display.clearDisplay();
 
+#ifdef GRAPH_LINE
   // Draw the graph points and lines
   for (int i = 0; i < ROLLING_SIZE; i++) {
     // Map the pulse length value to the display range
-    int y = map(rollingBuffer[i], 0, 65000, OLED_HEIGHT, 0);
+    int y = map(rollingBuffer[i], graphMin, graphMax, OLED_HEIGHT, 0);
 
     // Draw a dot at the graph point
     display.drawPixel(i , y, WHITE);
 
     // Draw a line to the next graph point if it exists
     if (i < ROLLING_SIZE - 1) {
-      int y2 = map(rollingBuffer[i + 1], 0, 65000, OLED_HEIGHT, 0);
+      int y2 = map(rollingBuffer[i + 1], graphMin, graphMax, OLED_HEIGHT, 0);
       display.drawLine(i + 10, y, i + 11, y2, WHITE);
     }
   }
 
+#endif //GRAPH_LINE
+
+#ifdef GRAPH_BARS
+
+
+#endif //GRAPH_BARS
   // Update the display
   display.display();
 }
