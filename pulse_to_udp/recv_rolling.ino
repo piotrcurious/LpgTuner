@@ -156,9 +156,21 @@ void drawGraph() {
 #endif //GRAPH_LINE
 
 #ifdef GRAPH_BARS
-
+  // Draw the graph data as vertical bars
+  for (uint8_t i = 0; i < ROLLING_SIZE; i++) {
+    // Map the data value to the graph height
+    uint8_t barHeight = map(rollingBuffer[i], graphMin, graphMax, 0, graphH );
+    
+    // Draw a vertical bar from the bottom to the data value
+//    display.drawLine(graphX + i, graphY + graphH , graphX + i, graphY + graphH - barHeight, SSD1306_WHITE);
+    //display.drawFastVLine(graphX + i, graphY + graphH , barHeight, SSD1306_WHITE);
+    //display.drawFastVLine(graphX + i, graphY+(graphH-barHeight) , barHeight, SSD1306_WHITE);
+    display.drawFastVLine( i, (OLED_HEIGHT-barHeight) , barHeight, SSD1306_WHITE);   
+  }
+}
 
 #endif //GRAPH_BARS
+
   // Update the display
   display.display();
 }
