@@ -3,6 +3,8 @@
 #define UDP_IP "224.0.1.187"
 #define UDP_PORT 5683
 
+#define MAX_SIZE 100 //Max size of buffers
+
 // Include the necessary libraries
 #include <Arduino.h>
 #include <WiFi.h>
@@ -11,9 +13,9 @@
 // Declare a pragma packed struct to store the pulse data
 #pragma pack(push, 1)
 struct PulseData {
-  uint32_t rpm[100]; // Array to store the RPM values
-  uint32_t length[100]; // Array to store the pulse length values
-  uint8_t index; // Index to keep track of the array position
+  uint32_t rpm[MAX_SIZE]; // Array to store the RPM values
+  uint32_t length[MAX_SIZE]; // Array to store the pulse length values
+  uint8_t index; // packet index. 
 };
 #pragma pack(pop)
 
@@ -62,7 +64,9 @@ void handlePacket(AsyncUDPPacket packet) {
 
   // Print the pulse data to the serial monitor
   Serial.println("Pulse data received");
-  for (int i = 0; i < pulseData.index; i++) {
+  Serial.print("index: ");
+  Serial.println(pulseData.index);
+  for (int i = 0; i < MAX_SIZE; i++) {
     Serial.print("RPM: ");
     Serial.print(pulseData.rpm[i]);
     Serial.print(" Length: ");
