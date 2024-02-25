@@ -20,7 +20,7 @@
 #include <Adafruit_SSD1306.h>
 
 // declare packet buffer size. 
-#define PACKET_BUFFER_SIZE 100 
+#define PACKET_BUFFER_SIZE 8
 // Declare a global variable to store the rolling buffer size
 #define ROLLING_SIZE OLED_WIDTH
 
