@@ -165,6 +165,9 @@ void ICACHE_RAM_ATTR handlePulse() {
     // Calculate the time difference since the last pulse
     uint32_t timeDiff = currentTime - lastPulseTime;
 
+    // Update the last pulse time (early-not tested)
+    lastPulseTime = currentTime;
+    
     // Calculate the RPM value
 //    uint32_t rpm = 60000000 / timeDiff; //60 000 000 / timeDiff in case of micros 
 //    uint32_t rpm =(uint64_t) 60*240000000 / timeDiff; 
@@ -179,9 +182,11 @@ void ICACHE_RAM_ATTR handlePulse() {
 //    pulseData.rpm[array_index] = (double) 60*240000000 / timeDiff; //fixme - this should work but pauses for some reason
 
     pulseData.rpm[array_index] = (double) 60*TRANSLATION_TIMEBASE / timeDiff; //fixme - this works only when done in double.. why?
-
+// TODO: move computation to buffer assembly logic
+    //so it allows measuring shorter pulses and reduces jitter
+    
     // Update the last pulse time
-    lastPulseTime = currentTime;
+   // lastPulseTime = currentTime;
   } else {
     // Falling edge detected
     // Calculate the pulse length
