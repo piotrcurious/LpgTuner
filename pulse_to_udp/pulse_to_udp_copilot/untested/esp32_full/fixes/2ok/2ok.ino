@@ -25,14 +25,14 @@ const char* multicastIP = "239.255.0.1";
 const uint16_t multicastPort = 12345;
 
 // Pin Definitions
-const uint8_t CAM_SENSOR_PIN = 4;
-const uint8_t IGNITION_PIN = 5;
-const uint8_t INJECTION_PIN_1 = 6;
-const uint8_t INJECTION_PIN_2 = 7;
-const uint8_t INJECTION_PIN_3 = 8;
-const uint8_t INJECTION_PIN_4 = 9;
-const uint8_t LAMBDA_PIN = 36 ;
-const uint8_t MAP_SENSOR_PIN = 39 ;
+const uint8_t CAM_SENSOR_PIN  = 34;
+const uint8_t IGNITION_PIN    = 35;
+const uint8_t INJECTION_PIN_1 = 32;
+const uint8_t INJECTION_PIN_2 = 33;
+const uint8_t INJECTION_PIN_3 = 27;
+const uint8_t INJECTION_PIN_4 = 2;
+const uint8_t LAMBDA_PIN      = 36 ;
+const uint8_t MAP_SENSOR_PIN  = 39 ;
 
 // Constants
 const uint8_t NUM_CYLINDERS = 4;
@@ -245,10 +245,10 @@ void sendUnifiedPacket() {
     memcpy((void*)&transmitPacket, &workingPacket, sizeof(UnifiedPacket));
     interrupts();
     
-    if (WiFi.status() == WL_CONNECTED) {
+//    if (WiFi.status() == WL_CONNECTED) {
         udp.writeTo((uint8_t*)&transmitPacket, sizeof(UnifiedPacket), 
                    IPAddress(239, 255, 0, 1), multicastPort);
-    }
+//    }
 }
 
 // Process Data
@@ -262,14 +262,14 @@ void processData() {
 }
 
 void setup() {
-    pinMode(CAM_SENSOR_PIN, INPUT_PULLUP);
-    pinMode(IGNITION_PIN, INPUT_PULLUP);
-    pinMode(INJECTION_PIN_1, INPUT_PULLUP);
-    pinMode(INJECTION_PIN_2, INPUT_PULLUP);
-    pinMode(INJECTION_PIN_3, INPUT_PULLUP);
-    pinMode(INJECTION_PIN_4, INPUT_PULLUP);
-    pinMode(LAMBDA_PIN, INPUT);
-    pinMode(MAP_SENSOR_PIN, INPUT);
+    pinMode(CAM_SENSOR_PIN,   INPUT_PULLUP);
+    pinMode(IGNITION_PIN,     INPUT_PULLUP);
+    pinMode(INJECTION_PIN_1,  INPUT_PULLUP);
+    pinMode(INJECTION_PIN_2,  INPUT_PULLUP);
+    pinMode(INJECTION_PIN_3,  INPUT_PULLUP);
+    pinMode(INJECTION_PIN_4,  INPUT_PULLUP);
+    pinMode(LAMBDA_PIN,       INPUT);
+    pinMode(MAP_SENSOR_PIN,   INPUT);
 
 
 
@@ -288,8 +288,8 @@ void setup() {
     memset(&workingPacket, 0, sizeof(UnifiedPacket));
     memset((void*)&transmitPacket, 0, sizeof(UnifiedPacket));
 
-    attachInterrupt(digitalPinToInterrupt(CAM_SENSOR_PIN), camISR, CHANGE);
-    attachInterrupt(digitalPinToInterrupt(IGNITION_PIN), ignitionISR, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(CAM_SENSOR_PIN) , camISR      , CHANGE);
+    attachInterrupt(digitalPinToInterrupt(IGNITION_PIN)   , ignitionISR , CHANGE);
     attachInterrupt(digitalPinToInterrupt(INJECTION_PIN_1), 
                    []() { injectionISR(0, INJECTION_PIN_1); }, CHANGE);
     attachInterrupt(digitalPinToInterrupt(INJECTION_PIN_2), 
@@ -309,5 +309,6 @@ void setup() {
 void loop() {
     processData();
     checkEngineTimeout();
-    delay(1);
+    yield();
+//    delay(1);
 }
