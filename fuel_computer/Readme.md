@@ -1,52 +1,48 @@
-Lambda expressions are a way of defining anonymous functions (functions without a name) directly within the scope of where they are used. They are concise and can capture variables from their enclosing scope, making them powerful for a variety of programming tasks¹.
+# Fuel Computer
 
-A lambda expression has the following syntax:
+This project is an Arduino sketch that calculates vehicle fuel consumption. It is designed to run on a microcontroller (like an Arduino or ESP32) connected to various engine sensors. The code calculates fuel usage in two common metrics: **Liters per Hour (L/h)** and **Liters per 100 Kilometers (L/100km)**.
 
-```c
-[capture list] (parameter list) -> return type { function body }
+## Functionality
+
+The `fuel_computer.ino` sketch provides two main functions:
+
+1.  `calculateFuelConsumption_LitersPerHour`: This function calculates the instantaneous fuel consumption rate, which is useful for understanding fuel usage while idling or at a constant load.
+2.  `calculateFuelEconomy_LitersPer100km`: This function calculates the standard fuel economy metric, which tells you how much fuel the vehicle uses to travel 100 kilometers.
+
+## How It Works
+
+The calculation is based on three key pieces of information from the engine:
+
+*   **Engine RPM (Revolutions Per Minute):** The rotational speed of the engine.
+*   **Injector Pulse Width (in milliseconds):** The amount of time a fuel injector is open and spraying fuel into a cylinder.
+*   **Vehicle Speed (in km/h):** The speed of the vehicle.
+
+The core logic assumes a standard 4-stroke engine, where each cylinder performs an injection once every two engine revolutions. By knowing how long the injector is open and how often it opens, we can calculate the total volume of fuel being consumed.
+
+### Formulas Used
+
+*   **Injections per Minute:** `RPM / 2`
+*   **Total Fuel per Hour (L/h):** `(Injections per Minute * Injection Pulse Width * Injector Flow Rate * 60)`
+*   **Fuel Economy (L/100km):** `(Liters per Hour / Vehicle Speed) * 100`
+
+## Configuration
+
+To get accurate readings, you **must** configure the script for your specific vehicle.
+
+Inside `fuel_computer.ino`, find the following constant:
+
+```cpp
+const float INJECTOR_FLOW_RATE_L_PER_MIN = 0.5; // Liters per minute
 ```
 
-The capture list specifies which variables from the outer scope are available inside the lambda. It can be empty, or it can use one of the following forms:
+You need to change the `0.5` value to the flow rate of your vehicle's fuel injectors. This information can usually be found in your vehicle's service manual or on the injector manufacturer's website. The value should be in **Liters per Minute**.
 
-- `[&]` : capture all external variables by reference
-- `[=]` : capture all external variables by value
-- `[a, &b]` : capture `a` by value and `b` by reference
-- `[this]` : capture the `this` pointer of the enclosing class
+## Hardware & Connection
 
-The parameter list and the return type are similar to those of a normal function. The return type can be omitted if the compiler can deduce it from the function body.
+This code is designed to be run on a microcontroller as part of a larger vehicle monitoring system. You will need to have sensors to provide the required inputs:
 
-The function body contains the statements that define the behavior of the lambda. It can be a single expression or a block of statements.
+*   An RPM sensor (e.g., a connection to the vehicle's tachometer signal or a sensor on the crankshaft).
+*   A method to measure the injector pulse width (e.g., by tapping into the signal wire of a fuel injector).
+*   A speed sensor (e.g., from the vehicle's VSS wire).
 
-Here is an example of a lambda expression that takes two integers as parameters and returns their sum:
-
-```c
-auto add = [](int x, int y) -> int { return x + y; };
-```
-
-This lambda expression can be assigned to a variable of type `auto` or a suitable function pointer type. It can also be invoked directly, like this:
-
-```c
-int result = [](int x, int y) -> int { return x + y; } (3, 4); // result is 7
-```
-
-Lambda expressions were introduced in C++11 and have been extended in later versions of the language. Some of the features that have been added are:
-
-- Generic lambdas: The ability to use `auto` in the parameter list to create a template lambda that can accept any type of arguments.
-- Mutable lambdas: The ability to modify the captured variables by value by using the `mutable` keyword after the parameter list.
-- Capturing `*this` by value: The ability to capture the current object by value instead of by reference by using `[*this]` in the capture list.
-- Init-capture: The ability to initialize a captured variable with an expression instead of just copying or referencing an existing variable.
-- Variadic capture: The ability to capture a variable number of arguments by using `...` in the capture list.
-
-For more information and examples of lambda expressions in C++, you can refer to these sources:
-
-- [Lambda expression in C++ - GeeksforGeeks](^1^)
-- [Lambda expressions (since C++11) - cppreference.com](^2^)
-- [Lambda Expressions - Learn C++ For Free | CppTutorial](^3^)
-- [Generalized Lambda Expressions in C++14 - GeeksforGeeks](^4^)
-
-Source: Conversation with Bing, 3/4/2024
-(1) Lambda expression in C++ - GeeksforGeeks. https://www.geeksforgeeks.org/lambda-expression-in-c/.
-(2) Lambda expression in C++ - GeeksforGeeks. https://www.geeksforgeeks.org/lambda-expression-in-c/.
-(3) Lambda expressions (since C++11) - cppreference.com. https://en.cppreference.com/w/cpp/language/lambda.
-(4) Lambda Expressions - Learn C++ For Free | CppTutorial. https://cpptutorial.io/lambda-expressions/.
-(5) Generalized Lambda Expressions in C++14 - GeeksforGeeks. https://www.geeksforgeeks.org/generalized-lambda-expressions-c14/.
+The `setup()` and `loop()` functions in the sketch provide an example of how to call the calculation functions and print the results to the Serial monitor for debugging. In a real-world application, you would replace the example static values with live data from your sensors.
