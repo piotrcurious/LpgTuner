@@ -438,15 +438,6 @@ alibration
 void BarPlotter::plotTask(void* pvParameters) {
     BarPlotter* self = (BarPlotter*)pvParameters;
 
-    // Two timing parameter sets (tweak to suit panel)
-    self->_even_frctr2 = 0x1f;// for 320x240 st7789
-    self->_even_fporch = 0x38;
-    self->_even_bporch = 0x36;
-
-    self->_odd_frctr2 = 0x1a;
-    self->_odd_fporch = 0x40;
-    self->_odd_bporch = 0x3f;
-
     bool use_even_set = true;
 
     // Perform a single calibration to estimate per-bar DMA time (µs)

@@ -70,6 +70,8 @@ volatile uint32_t min_trigger_separation_ms = 50;
 volatile uint32_t last_trigger_event_ms = 0;
 volatile uint16_t trigger_hysteresis = 8;
 volatile size_t last_trigger_ring_index = SIZE_MAX;
+volatile uint32_t generated_frames = 0;
+volatile uint32_t dropped_frames = 0;
 
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -212,7 +214,10 @@ void loop() {
 void try_flush_pending() {
   if (pending_snapshot_valid && pending_snapshot) {
     if (plotter.startBarPlot(pending_snapshot, BAR_COUNT)) {
+      generated_frames++;
       pending_snapshot_valid = false;
+    } else {
+      dropped_frames++;
     }
   }
 }
@@ -221,6 +226,7 @@ bool attempt_queue_snapshot(uint16_t* snapshot_data) {
   try_flush_pending();
 
   if (plotter.startBarPlot(snapshot_data, BAR_COUNT)) {
+    generated_frames++;
     return true;
   } else {
     if (!pending_snapshot_valid && pending_snapshot) {
@@ -228,6 +234,7 @@ bool attempt_queue_snapshot(uint16_t* snapshot_data) {
       pending_snapshot_valid = true;
       return true;
     }
+    dropped_frames++;
   }
   return false;
 }
@@ -299,6 +306,7 @@ void serial_plotter_helper() {
     return;
   } else if (input == 's' || input == 'S') {
     plotter.printConfig();
+    Serial.printf("Frames generated: %u, dropped: %u\n", (unsigned)generated_frames, (unsigned)dropped_frames);
     Serial.printf("Plotter state: %s\n", plotter.frameStateString());
     return;
   } else if (input == 'r' || input == 'R') {
@@ -391,7 +399,8 @@ void handle_ir() {
             break;
         }
         case KEY_OK:
-            plotter.printConfig();
+            Serial.printf("STATUS: trigger=%s slope=%d value=%u hold_ms=%u triggered_copy=%.2f fallback_copy=%.2f pending=%d\n",
+                      trigger_enabled ? "ON" : "OFF", trigger_slope, trigger_value, (unsigned)trigger_hold_ms, triggered_copy_freq_hz, fallback_copy_freq_hz, pending_snapshot_valid ? 1 : 0);
             break;
         case KEY_MENU:
             if (pending_snapshot_valid) {
