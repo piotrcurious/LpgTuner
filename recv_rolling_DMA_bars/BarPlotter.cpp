@@ -52,11 +52,11 @@ BarPlotter::BarPlotter(TFT_eSPI& tft) :
     _mid_offset((uint32_t)((uint64_t)(1000000.0f / DEFAULT_RATE_HZ) / 2)),
     _porch_step(DEFAULT_PORCH_STEP),
     _target_rate_hz(DEFAULT_RATE_HZ),
-    _even_frctr2(0x1f), // for 320x240 st7789
-    _even_fporch(0x38),
-    _even_bporch(0x36),
-    _odd_frctr2(0x1a),
-    _odd_fporch(0x40),
+    _even_frctr2(0x0b), // for ST7735
+    _even_fporch(0x16),
+    _even_bporch(0x3f),
+    _odd_frctr2(0x0a),
+    _odd_fporch(0x20),
     _odd_bporch(0x3f),
     _debug_mode(false),
     _debug_fill_state(false),
@@ -287,19 +287,12 @@ void BarPlotter::endWrite() {
 
 
 // -------------------- Helper: write the timing registers --------------------
-// This writes the FRCTR2 and PORCTRL settings for a given 3-byte parameter set.
-// We expect the caller to call within startWrite()/endWrite() context or we do
-it ourselves.
-static inline void write_timing_registers(TFT_eSPI &tft, uint8_t frctr2_val, uin
-t8_t por_fporch, uint8_t por_bporch) {
-    tft.writecommand(ST7789_FRCTR2);
-    tft.writedata(frctr2_val);
-    tft.writecommand(ST7789_PORCTRL);
-    tft.writedata(por_fporch);
-    tft.writedata(por_bporch);
-    tft.writedata(0x01); // enable separate porch control
-    tft.writedata(0x33);
-    tft.writedata(0x33);
+static inline void write_timing_registers(TFT_eSPI &tft, uint8_t frctr, uint8_t
+fporch, uint8_t bporch) {
+    tft.writecommand(ST7735_FRMCTR1);
+    tft.writedata(frctr);
+    tft.writedata(fporch);
+    tft.writedata(bporch);
 }
 
 
