@@ -49,6 +49,6 @@ public:
   }
 };
 
-LGFX tft;
+extern LGFX tft;
 
 #define TFT_LED 27

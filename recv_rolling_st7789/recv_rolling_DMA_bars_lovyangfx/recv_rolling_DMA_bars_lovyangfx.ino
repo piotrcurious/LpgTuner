@@ -6,6 +6,7 @@
 #include <IRremote.h>
 #include <AsyncUDP.h>
 
+LGFX tft;
 
 // --- BarPlotter Config ---
 #define BAR_COUNT             320
