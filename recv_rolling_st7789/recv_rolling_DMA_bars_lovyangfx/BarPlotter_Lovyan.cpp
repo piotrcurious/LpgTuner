@@ -1,6 +1,7 @@
 // BarPlotter.cpp  (replacement - drop in)
 #include "BarPlotter_Lovyan.h"
-#include <lgfx/v1/platforms/esp32s3/Bus_SPI.hpp>
+#include "display_settings_lovyangfx.h"
+#include <lgfx/v1/platforms/esp32/Bus_SPI.hpp>
 #include "esp_heap_caps.h" // MALLOC_CAP_DMA
 #include "esp_timer.h"     // esp_timer_get_time()
 #include <string.h>
@@ -118,8 +119,7 @@ uint64_t BarPlotter::choose_next_duration_us_no_side_effects() const {
 }
 
 // -------------------- constructor / destructor --------------------
-BarPlotter::BarPlotter(LGFX& tft) :
-    _tft(tft),
+BarPlotter::BarPlotter(LGFX& tft) : _tft(tft),
     _barCount(0), _barWidth(0), _barMaxHeight(0), _plotX(0), _plotY(0), _plotSpacing(0),
     _plotInProgress(false), _plotQueueInProgress(false), _plotDataArray(nullptr), _plotDataCount(0),
     _currentBarIndex(0), _plotTaskHandle(NULL),

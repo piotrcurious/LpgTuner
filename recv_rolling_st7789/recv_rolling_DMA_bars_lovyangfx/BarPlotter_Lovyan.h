@@ -2,7 +2,7 @@
 #define BAR_PLOTTER_H
 
 #include <Arduino.h>
-#include <LovyanGFX.hpp>
+#include "display_settings_lovyangfx.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
