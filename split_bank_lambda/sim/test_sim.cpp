@@ -83,7 +83,7 @@ struct TestResult {
     std::string message;
 };
 
-TestResult run_scenario(std::string name, float imbalance1, float imbalance2, int steps, bool logToCsv) {
+TestResult run_scenario(std::string name, float imbalance1, float imbalance2, int steps, bool logToCsv, float transientImbalance1 = 0.0f, int transientStep = -1) {
     reset_controller();
     EngineSubgroup bank1, bank2;
     bank1.offsetImbalance = imbalance1;
@@ -104,6 +104,10 @@ TestResult run_scenario(std::string name, float imbalance1, float imbalance2, in
     int samples = 0;
 
     for (int i = 0; i < steps; ++i) {
+        if (i == transientStep) {
+            bank1.offsetImbalance = transientImbalance1;
+            std::cout << "[Step " << i << "] Transient Imbalance Applied: " << transientImbalance1 << std::endl;
+        }
         bank1.update(dacValues[DAC1_PIN]);
         bank2.update(dacValues[DAC2_PIN]);
         analogValues[LAMBDA1_PIN] = (int)(bank1.currentVoltage * 4095.0f / 3.3f);
@@ -157,7 +161,8 @@ int main() {
 
     results.push_back(run_scenario("Balanced", 0.0f, 0.0f, 1000, false));
     results.push_back(run_scenario("Imbalance_Large", -0.15f, 0.05f, 1000, false));
-    results.push_back(run_scenario("Saturation", -0.35f, 0.15f, 2000, true)); // Log this one for plotting
+    results.push_back(run_scenario("Saturation", -0.35f, 0.15f, 2000, false));
+    results.push_back(run_scenario("Transient", 0.0f, 0.0f, 2000, true, -0.20f, 500)); // Log transient for plotting
 
     int failed = 0;
     for (auto& r : results) {
