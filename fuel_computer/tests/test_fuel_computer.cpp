@@ -80,11 +80,49 @@ void test_extreme_values() {
     std::cout << "  Passed!" << std::endl;
 }
 
+void test_kahan_summation() {
+    std::cout << "Testing Kahan summation stability..." << std::endl;
+
+    // Reset globals
+    totalFuelConsumed_L = 0.0f;
+    kahanCompensation = 0.0f;
+
+    // We'll simulate adding a very small increment many times.
+    // Let's say 0.000001 L added 1,000,000 times.
+    // Total should be exactly 1.0.
+
+    float smallIncrement_L_h = 0.0036f; // 0.0036 L/h = 0.000001 L/s
+    float deltaTime_s = 1.0f;
+
+    float naiveSum = 0.0f;
+    for (int i = 0; i < 1000000; ++i) {
+        accumulateFuel(smallIncrement_L_h, deltaTime_s);
+        naiveSum += (smallIncrement_L_h / 3600.0f) * deltaTime_s;
+    }
+
+    std::cout << "  Naive sum: " << std::fixed << std::setprecision(10) << naiveSum << std::endl;
+    std::cout << "  Kahan sum: " << std::fixed << std::setprecision(10) << totalFuelConsumed_L << std::endl;
+
+    // In many environments, 32-bit float naive sum will start losing precision significantly
+    // when the sum becomes much larger than the increment.
+    // 1.0 is ~2^20 times larger than 0.000001.
+    // 32-bit float has ~7 decimal digits of precision.
+
+    // We expect Kahan sum to be much closer to 1.0
+    assert(is_close(totalFuelConsumed_L, 1.0f, 0.0001f));
+
+    // Naive sum often fails to reach exactly 1.0 in this scenario
+    // (though it depends on the exact float representation and rounding mode)
+
+    std::cout << "  Passed!" << std::endl;
+}
+
 int main() {
     test_fuel_computer_ino();
     test_Lambda_computer1_ino();
     test_fuel_computer2_ino();
     test_extreme_values();
+    test_kahan_summation();
 
     std::cout << "\nAll enhanced tests passed successfully!" << std::endl;
     return 0;

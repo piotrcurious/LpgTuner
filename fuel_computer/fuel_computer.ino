@@ -28,15 +28,22 @@ const float INJECTOR_FLOW_RATE_L_PER_MIN = 0.5; // Liters per minute
 // Set this to the number of cylinders in your engine.
 const int NUM_CYLINDERS = 4;
 
+// --- Global Variables for Accumulation ---
+float totalFuelConsumed_L = 0.0f;
+float kahanCompensation = 0.0f; // Compensation term for Kahan summation
+unsigned long lastUpdate_ms = 0;
+
 // --- Function Prototypes ---
 float calculateFuelConsumption_LitersPerHour(float injectionLength_ms, int rpm);
 float calculateFuelEconomy_LitersPer100km(float injectionLength_ms, int rpm, float vehicleSpeed_kmh);
+void accumulateFuel(float consumption_L_h, float deltaTime_s);
 
 void setup() {
   // Initialize Serial communication for debugging and output
   Serial.begin(115200);
   Serial.println("Fuel Computer Initialized.");
   Serial.println("--------------------------");
+  lastUpdate_ms = millis();
 }
 
 void loop() {
@@ -53,6 +60,12 @@ void loop() {
   // Calculate fuel economy in Liters per 100 km
   float economy_L_100km = calculateFuelEconomy_LitersPer100km(example_injectionLength_ms, example_rpm, example_vehicleSpeed_kmh);
 
+  // Update cumulative fuel consumption
+  unsigned long current_ms = millis();
+  float deltaTime_s = (current_ms - lastUpdate_ms) / 1000.0f;
+  accumulateFuel(consumption_L_h, deltaTime_s);
+  lastUpdate_ms = current_ms;
+
   // Print the results
   Serial.print("RPM: "); Serial.print(example_rpm);
   Serial.print(" | Injection Length: "); Serial.print(example_injectionLength_ms, 2); Serial.print(" ms");
@@ -60,6 +73,7 @@ void loop() {
 
   Serial.print("=> Fuel Consumption: "); Serial.print(consumption_L_h, 2); Serial.println(" L/h");
   Serial.print("=> Fuel Economy: "); Serial.print(economy_L_100km, 2); Serial.println(" L/100km");
+  Serial.print("=> Total Consumed: "); Serial.print(totalFuelConsumed_L, 6); Serial.println(" L");
   Serial.println("--------------------------");
 
 
@@ -124,4 +138,28 @@ float calculateFuelEconomy_LitersPer100km(float injectionLength_ms, int rpm, flo
   float economy_L_100km = (consumption_L_h / vehicleSpeed_kmh) * 100.0f;
 
   return economy_L_100km;
+}
+
+/**
+ * @brief Accumulates fuel consumption using the Kahan summation algorithm to maintain precision.
+ *
+ * @param consumption_L_h Instantaneous fuel consumption in Liters per Hour.
+ * @param deltaTime_s Time elapsed since last update in seconds.
+ */
+void accumulateFuel(float consumption_L_h, float deltaTime_s) {
+  if (deltaTime_s <= 0) return;
+
+  // Calculate the small increment of fuel consumed during this interval
+  float fuelIncrement = (consumption_L_h / 3600.0f) * deltaTime_s;
+
+  // Kahan summation logic:
+  // y is the increment plus the compensation from previous steps
+  float y = fuelIncrement - kahanCompensation;
+  // t is the intended sum
+  float t = totalFuelConsumed_L + y;
+  // (t - totalFuelConsumed_L) is the actual increment added, which might differ from y due to precision
+  // Subtracting y from that difference gives the negative of the lost precision
+  kahanCompensation = (t - totalFuelConsumed_L) - y;
+  // Update the running total
+  totalFuelConsumed_L = t;
 }

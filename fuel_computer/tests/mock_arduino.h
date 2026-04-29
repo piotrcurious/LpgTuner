@@ -26,5 +26,6 @@ extern MockSerial Serial;
 
 // Mock Arduino functions
 void delay(unsigned long ms);
+unsigned long millis();
 
 #endif // MOCK_ARDUINO_H
