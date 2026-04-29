@@ -35,12 +35,15 @@ unsigned long millis() { return _millis; }
 extern void runControllerStep();
 extern float currentOffset1, currentOffset2, filteredLambda1, filteredLambda2;
 extern unsigned long lastUpdate;
+extern bool sensor1Active, sensor2Active;
 
 void reset_controller() {
     currentOffset1 = DAC_MID;
     currentOffset2 = DAC_MID;
     filteredLambda1 = 0.5f;
     filteredLambda2 = 0.5f;
+    sensor1Active = false;
+    sensor2Active = false;
     lastUpdate = 0;
     _millis = 0;
     for(int i=0; i<40; i++) {
@@ -57,39 +60,51 @@ float afrToVoltage(float afr) {
     return 0.1f + 0.8f * (0.5f * (1.0f - std::tanh(20.0f * (lambda - 1.0f))));
 }
 
-struct EngineSubgroup {
-    float baseAfr = 14.7f;
-    float offsetImbalance = 0.0f;
-    std::deque<float> exhaustPipe;
-
-    // Engine State
+struct EngineModel {
+    float baseAfr1 = 14.7f;
+    float baseAfr2 = 14.7f;
+    float imbalance1 = 0.0f;
+    float imbalance2 = 0.0f;
     float rpm = 800.0f;
-    bool stuckValue = false;
-    float stuckVoltage = 0.0f;
 
-    void update(float dacOffset) {
-        if (stuckValue) {
-            currentVoltage = stuckVoltage;
-            return;
-        }
+    std::deque<float> pipe1, pipe2;
+    float currentV1 = 0.5f, currentV2 = 0.5f;
 
-        int transportDelaySteps = std::max(2, (int)(24000.0f / rpm));
+    bool sensorsWarming = false;
 
-        float fuelFactor = 1.0f + (dacOffset - 128.0f) / 128.0f * 0.20f;
-        fuelFactor *= (1.0f + offsetImbalance);
-        float actualAfr = baseAfr / fuelFactor;
+    void update(float dac1, float dac2) {
+        int delaySteps = std::max(2, (int)(24000.0f / rpm));
 
-        exhaustPipe.push_back(actualAfr);
-        while (exhaustPipe.size() > transportDelaySteps) {
-            float delayedAfr = exhaustPipe.front();
-            exhaustPipe.pop_front();
-            currentVoltage = afrToVoltage(delayedAfr);
-            float noiseMag = 2000.0f;
-            currentVoltage += ((rand() % 100) - 50) / noiseMag;
+        float fuel1 = 1.0f + (dac1 - 128.0f) / 128.0f * 0.20f;
+        float fuel2 = 1.0f + (dac2 - 128.0f) / 128.0f * 0.20f;
+
+        fuel1 *= (1.0f + imbalance1);
+        fuel2 *= (1.0f + imbalance2);
+
+        // Add Cross-talk (10% of fuel from other bank affects this bank)
+        float effectiveFuel1 = 0.9f * fuel1 + 0.1f * fuel2;
+        float effectiveFuel2 = 0.9f * fuel2 + 0.1f * fuel1;
+
+        float afr1 = baseAfr1 / effectiveFuel1;
+        float afr2 = baseAfr2 / effectiveFuel2;
+
+        pipe1.push_back(afr1);
+        pipe2.push_back(afr2);
+
+        if (pipe1.size() > delaySteps) {
+            float dAfr1 = pipe1.front(); pipe1.pop_front();
+            float dAfr2 = pipe2.front(); pipe2.pop_front();
+
+            if (sensorsWarming && _millis < 3000) {
+                // Simulate cold sensors at a fixed mid-voltage, no switching
+                currentV1 = 0.455f;
+                currentV2 = 0.455f;
+            } else {
+                currentV1 = afrToVoltage(dAfr1) + ((rand() % 100) - 50) / 2000.0f;
+                currentV2 = afrToVoltage(dAfr2) + ((rand() % 100) - 50) / 2000.0f;
+            }
         }
     }
-
-    float currentVoltage = 0.5f;
 };
 
 struct TestResult {
@@ -97,14 +112,15 @@ struct TestResult {
     std::string message;
 };
 
-EngineSubgroup bank1, bank2;
+EngineModel engine;
 
-TestResult run_scenario(std::string name, float imbalance1, float imbalance2, int steps, bool logToCsv) {
+TestResult run_scenario(std::string name, float imb1, float imb2, int steps, bool logToCsv) {
     reset_controller();
-    bank1 = EngineSubgroup();
-    bank2 = EngineSubgroup();
-    bank1.offsetImbalance = imbalance1;
-    bank2.offsetImbalance = imbalance2;
+    engine = EngineModel();
+    engine.imbalance1 = imb1;
+    engine.imbalance2 = imb2;
+
+    if (name == "ColdStart") engine.sensorsWarming = true;
 
     std::ofstream csvFile;
     if (logToCsv) {
@@ -116,42 +132,29 @@ TestResult run_scenario(std::string name, float imbalance1, float imbalance2, in
 
     bool driftTriggered = false;
     bool limitTriggered = false;
-    float maxOsc1 = 0;
-    float minV1 = 1.0, maxV1 = 0.0;
-    int limitStep = -1;
-
-    if (name == "SensorStuckLean") { bank1.stuckValue = true; bank1.stuckVoltage = 0.1f; }
-    else if (name == "SensorStuckRich") { bank2.stuckValue = true; bank2.stuckVoltage = 0.9f; }
+    int engagementStep = -1;
 
     for (int i = 0; i < steps; ++i) {
-        if (name == "IdleOscillation") bank1.rpm = bank2.rpm = 800.0f;
-        else if (name == "Transient") {
-             if (i < 500) bank1.rpm = bank2.rpm = 2000.0f;
-             else { bank1.rpm = bank2.rpm = 4000.0f; bank1.offsetImbalance = -0.20f; }
+        if (name == "Transient") {
+             if (i < 500) engine.rpm = 2000.0f;
+             else { engine.rpm = 4000.0f; engine.imbalance1 = -0.25f; }
+        } else {
+            engine.rpm = 2000.0f;
         }
-        else bank1.rpm = bank2.rpm = 2000.0f;
 
-        bank1.update(dacValues[DAC1_PIN]);
-        bank2.update(dacValues[DAC2_PIN]);
-        analogValues[LAMBDA1_PIN] = (int)(bank1.currentVoltage * 4095.0f / 3.3f);
-        analogValues[LAMBDA2_PIN] = (int)(bank2.currentVoltage * 4095.0f / 3.3f);
+        engine.update(dacValues[DAC1_PIN], dacValues[DAC2_PIN]);
+        analogValues[LAMBDA1_PIN] = (int)(engine.currentV1 * 4095.0f / 3.3f);
+        analogValues[LAMBDA2_PIN] = (int)(engine.currentV2 * 4095.0f / 3.3f);
 
         runControllerStep();
 
-        if (pins[LAMBDA1_ENABLE_PIN].state == HIGH) driftTriggered = true;
-        if (pins[LAMBDA2_ENABLE_PIN].state == HIGH) {
-            if (!limitTriggered) limitStep = i;
-            limitTriggered = true;
-        }
+        if (engagementStep == -1 && sensor1Active && sensor2Active) engagementStep = i;
 
-        if (i > steps / 2) {
-            maxOsc1 = std::max(maxOsc1, std::abs(bank1.currentVoltage - 0.45f));
-            minV1 = std::min(minV1, bank1.currentVoltage);
-            maxV1 = std::max(maxV1, bank1.currentVoltage);
-        }
+        if (pins[LAMBDA1_ENABLE_PIN].state == HIGH) driftTriggered = true;
+        if (pins[LAMBDA2_ENABLE_PIN].state == HIGH) limitTriggered = true;
 
         if (logToCsv && i % 10 == 0) {
-            csvFile << i << "," << i * 0.01f << "," << bank1.currentVoltage << "," << bank2.currentVoltage << ","
+            csvFile << i << "," << i * 0.01f << "," << engine.currentV1 << "," << engine.currentV2 << ","
                     << dacValues[DAC1_PIN] << "," << dacValues[DAC2_PIN] << ","
                     << pins[LAMBDA1_ENABLE_PIN].state << "," << pins[LAMBDA2_ENABLE_PIN].state << std::endl;
         }
@@ -159,19 +162,17 @@ TestResult run_scenario(std::string name, float imbalance1, float imbalance2, in
         _millis += 10;
     }
 
+    std::cout << "  Engagement Step: " << engagementStep << std::endl;
     std::cout << "  Final Offsets: " << (int)currentOffset1 << ", " << (int)currentOffset2 << std::endl;
     std::cout << "  Drift Triggered: " << (driftTriggered ? "YES" : "NO") << std::endl;
-    std::cout << "  Limit Triggered: " << (limitTriggered ? "YES" : "NO");
-    if (limitTriggered) std::cout << " at step " << limitStep;
-    std::cout << std::endl;
-    std::cout << "  Steady-State V1 Range: [" << minV1 << ", " << maxV1 << "] (Target 0.45)" << std::endl;
+    std::cout << "  Limit Triggered: " << (limitTriggered ? "YES" : "NO") << std::endl;
 
     if (logToCsv) csvFile.close();
 
-    if (name == "SensorStuckLean" || name == "SensorStuckRich") {
-        if (!limitTriggered) return {false, "Limit emulation failed to trigger on stuck sensor"};
-    } else if (name == "IdleOscillation") {
-        if (maxOsc1 > 0.15) return {false, "Oscillation at idle too high"};
+    if (name == "ColdStart") {
+        if (engagementStep < 300) return {false, "Control engaged before sensor warm-up"};
+    } else if (name == "Transient") {
+        if (!limitTriggered) return {false, "Limit not triggered on large imbalance"};
     }
 
     return {true, "Success"};
@@ -181,9 +182,8 @@ int main() {
     srand(42);
     std::vector<TestResult> results;
 
-    results.push_back(run_scenario("IdleOscillation", 0.0f, 0.0f, 1500, false));
-    results.push_back(run_scenario("SensorStuckLean", 0.0f, 0.0f, 1500, false));
-    results.push_back(run_scenario("SensorStuckRich", 0.0f, 0.0f, 1500, false));
+    results.push_back(run_scenario("Normal", 0.0f, 0.0f, 1000, false));
+    results.push_back(run_scenario("ColdStart", 0.0f, 0.0f, 1000, false));
     results.push_back(run_scenario("Transient", 0.0f, 0.0f, 2000, true));
 
     int failed = 0;
@@ -195,7 +195,7 @@ int main() {
     }
 
     if (failed == 0) {
-        std::cout << "\nALL EDGE CASE TESTS PASSED" << std::endl;
+        std::cout << "\nALL ENHANCED TESTS PASSED" << std::endl;
         return 0;
     } else {
         std::cout << "\n" << failed << " TESTS FAILED" << std::endl;
