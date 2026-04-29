@@ -168,10 +168,10 @@ int main() {
     EngineSubgroup bank1, bank2;
 
     // Scenarios:
-    // 1. Bank 1 is naturally 5% lean
-    bank1.offsetImbalance = -0.05f;
-    // 2. Bank 2 is naturally 2% rich
-    bank2.offsetImbalance = 0.02f;
+    // 1. Bank 1 is naturally 25% lean (Large imbalance to trigger Limit)
+    bank1.offsetImbalance = -0.25f;
+    // 2. Bank 2 is naturally 5% rich
+    bank2.offsetImbalance = 0.05f;
 
     std::cout << "Step,Time,L1_V,L2_V,Off1,Off2,Drift_En,Lim_En" << std::endl;
 
