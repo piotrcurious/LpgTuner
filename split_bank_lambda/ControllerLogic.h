@@ -36,8 +36,8 @@
 #define DAC_MID              128
 
 // Sliding Mode Control Parameters
-#define SMC_GAIN             0.5f   // Rate of offset change
-#define SMC_BOUNDARY         0.10f  // Boundary layer (Volts) for chattering reduction
+#define SMC_GAIN             0.2f   // Rate of offset change. Reduced for idle stability.
+#define SMC_BOUNDARY         0.20f  // Boundary layer (Volts) for chattering reduction. Increased.
 
 // Thresholds for Emulation
 #define ASYMMETRY_THRESHOLD  40.0f  // Difference in offsets to trigger drift emulation
