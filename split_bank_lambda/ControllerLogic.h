@@ -50,6 +50,9 @@ extern float filteredLambda1;
 extern float filteredLambda2;
 extern unsigned long lastUpdate;
 
+extern bool sensor1Active;
+extern bool sensor2Active;
+
 const unsigned long UPDATE_INTERVAL = 10; // 10ms = 100Hz loop
 
 // Saturation function for Sliding Mode Control
