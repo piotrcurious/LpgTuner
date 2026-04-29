@@ -71,8 +71,14 @@ struct EngineModel {
     float currentV1 = 0.5f, currentV2 = 0.5f;
 
     bool sensorsWarming = false;
+    bool stuckValue1 = false, stuckValue2 = false;
+    float stuckVoltage1 = 0.0f, stuckVoltage2 = 0.0f;
 
     void update(float dac1, float dac2) {
+        if (stuckValue1) currentV1 = stuckVoltage1;
+        if (stuckValue2) currentV2 = stuckVoltage2;
+        if (stuckValue1 && stuckValue2) return;
+
         int delaySteps = std::max(2, (int)(24000.0f / rpm));
 
         float fuel1 = 1.0f + (dac1 - 128.0f) / 128.0f * 0.20f;
@@ -81,7 +87,6 @@ struct EngineModel {
         fuel1 *= (1.0f + imbalance1);
         fuel2 *= (1.0f + imbalance2);
 
-        // Add Cross-talk (10% of fuel from other bank affects this bank)
         float effectiveFuel1 = 0.9f * fuel1 + 0.1f * fuel2;
         float effectiveFuel2 = 0.9f * fuel2 + 0.1f * fuel1;
 
@@ -96,12 +101,11 @@ struct EngineModel {
             float dAfr2 = pipe2.front(); pipe2.pop_front();
 
             if (sensorsWarming && _millis < 3000) {
-                // Simulate cold sensors at a fixed mid-voltage, no switching
                 currentV1 = 0.455f;
                 currentV2 = 0.455f;
             } else {
-                currentV1 = afrToVoltage(dAfr1) + ((rand() % 100) - 50) / 2000.0f;
-                currentV2 = afrToVoltage(dAfr2) + ((rand() % 100) - 50) / 2000.0f;
+                if (!stuckValue1) currentV1 = afrToVoltage(dAfr1) + ((rand() % 100) - 50) / 2000.0f;
+                if (!stuckValue2) currentV2 = afrToVoltage(dAfr2) + ((rand() % 100) - 50) / 2000.0f;
             }
         }
     }
@@ -110,23 +114,23 @@ struct EngineModel {
 struct TestResult {
     bool passed;
     std::string message;
+    std::string scenario;
 };
 
 EngineModel engine;
 
-TestResult run_scenario(std::string name, float imb1, float imb2, int steps, bool logToCsv) {
+TestResult run_scenario(std::string name, float imb1, float imb2, int steps) {
     reset_controller();
     engine = EngineModel();
     engine.imbalance1 = imb1;
     engine.imbalance2 = imb2;
 
     if (name == "ColdStart") engine.sensorsWarming = true;
+    if (name == "SensorStuckLean") { engine.stuckValue1 = true; engine.stuckVoltage1 = 0.1f; }
+    if (name == "SensorStuckRich") { engine.stuckValue2 = true; engine.stuckVoltage2 = 0.9f; }
 
-    std::ofstream csvFile;
-    if (logToCsv) {
-        csvFile.open("split_bank_lambda/sim/sim_output.csv");
-        csvFile << "Step,Time,L1_V,L2_V,Off1,Off2,Drift_En,Lim_En" << std::endl;
-    }
+    std::ofstream csvFile("split_bank_lambda/sim/sim_" + name + ".csv");
+    csvFile << "Step,Time,L1_V,L2_V,Off1,Off2,Drift_En,Lim_En" << std::endl;
 
     std::cout << "--- Scenario: " << name << " ---" << std::endl;
 
@@ -138,6 +142,8 @@ TestResult run_scenario(std::string name, float imb1, float imb2, int steps, boo
         if (name == "Transient") {
              if (i < 500) engine.rpm = 2000.0f;
              else { engine.rpm = 4000.0f; engine.imbalance1 = -0.25f; }
+        } else if (name == "IdleOscillation") {
+             engine.rpm = 800.0f;
         } else {
             engine.rpm = 2000.0f;
         }
@@ -153,7 +159,7 @@ TestResult run_scenario(std::string name, float imb1, float imb2, int steps, boo
         if (pins[LAMBDA1_ENABLE_PIN].state == HIGH) driftTriggered = true;
         if (pins[LAMBDA2_ENABLE_PIN].state == HIGH) limitTriggered = true;
 
-        if (logToCsv && i % 10 == 0) {
+        if (i % 10 == 0) {
             csvFile << i << "," << i * 0.01f << "," << engine.currentV1 << "," << engine.currentV2 << ","
                     << dacValues[DAC1_PIN] << "," << dacValues[DAC2_PIN] << ","
                     << pins[LAMBDA1_ENABLE_PIN].state << "," << pins[LAMBDA2_ENABLE_PIN].state << std::endl;
@@ -167,38 +173,42 @@ TestResult run_scenario(std::string name, float imb1, float imb2, int steps, boo
     std::cout << "  Drift Triggered: " << (driftTriggered ? "YES" : "NO") << std::endl;
     std::cout << "  Limit Triggered: " << (limitTriggered ? "YES" : "NO") << std::endl;
 
-    if (logToCsv) csvFile.close();
+    csvFile.close();
 
     if (name == "ColdStart") {
-        if (engagementStep < 300) return {false, "Control engaged before sensor warm-up"};
-    } else if (name == "Transient") {
-        if (!limitTriggered) return {false, "Limit not triggered on large imbalance"};
+        if (engagementStep < 300) return {false, "Control engaged before sensor warm-up", name};
+    } else if (name == "SensorStuckLean" || name == "SensorStuckRich" || name == "Transient") {
+        if (!limitTriggered) return {false, "Limit not triggered in error state", name};
     }
 
-    return {true, "Success"};
+    return {true, "Success", name};
 }
 
 int main() {
     srand(42);
     std::vector<TestResult> results;
 
-    results.push_back(run_scenario("Normal", 0.0f, 0.0f, 1000, false));
-    results.push_back(run_scenario("ColdStart", 0.0f, 0.0f, 1000, false));
-    results.push_back(run_scenario("Transient", 0.0f, 0.0f, 2000, true));
+    results.push_back(run_scenario("Normal", 0.0f, 0.0f, 1500));
+    results.push_back(run_scenario("ColdStart", 0.0f, 0.0f, 1500));
+    results.push_back(run_scenario("Transient", 0.0f, 0.0f, 2000));
+    results.push_back(run_scenario("IdleOscillation", 0.0f, 0.0f, 2000));
+    results.push_back(run_scenario("SensorStuckLean", 0.0f, 0.0f, 1500));
+    results.push_back(run_scenario("SensorStuckRich", 0.0f, 0.0f, 1500));
 
+    std::cout << "\nTest Results Table:" << std::endl;
+    std::cout << "Scenario | Status | Message" << std::endl;
+    std::cout << "--- | --- | ---" << std::endl;
     int failed = 0;
     for (auto& r : results) {
-        if (!r.passed) {
-            std::cerr << ">> Test FAILED: " << r.message << std::endl;
-            failed++;
-        }
+        std::cout << r.scenario << " | " << (r.passed ? "PASS" : "FAIL") << " | " << r.message << std::endl;
+        if (!r.passed) failed++;
     }
 
     if (failed == 0) {
-        std::cout << "\nALL ENHANCED TESTS PASSED" << std::endl;
+        std::cout << "\nALL SCENARIOS PASSED" << std::endl;
         return 0;
     } else {
-        std::cout << "\n" << failed << " TESTS FAILED" << std::endl;
+        std::cout << "\n" << failed << " SCENARIOS FAILED" << std::endl;
         return 1;
     }
 }
