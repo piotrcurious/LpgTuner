@@ -25,6 +25,9 @@
 // The default value is a placeholder.
 const float INJECTOR_FLOW_RATE_L_PER_MIN = 0.5; // Liters per minute
 
+// Set this to the number of cylinders in your engine.
+const int NUM_CYLINDERS = 4;
+
 // --- Function Prototypes ---
 float calculateFuelConsumption_LitersPerHour(float injectionLength_ms, int rpm);
 float calculateFuelEconomy_LitersPer100km(float injectionLength_ms, int rpm, float vehicleSpeed_kmh);
@@ -76,10 +79,12 @@ float calculateFuelConsumption_LitersPerHour(float injectionLength_ms, int rpm) 
     return 0; // Avoid division by zero and handle engine-off case
   }
 
-  // For a 4-stroke engine, one injection cycle occurs every two revolutions.
-  float injections_per_minute = rpm / 2.0f;
+  // For a 4-stroke engine, each cylinder has one injection event every two revolutions.
+  // We calculate the total number of injection events per minute for the entire engine.
+  float injections_per_minute = (rpm / 2.0f) * (float)NUM_CYLINDERS;
 
-  // Calculate the total time the injector is open per minute (in milliseconds).
+  // Calculate the total time ALL injectors are open per minute (in milliseconds).
+  // This assumes all injectors have the same pulse width.
   float total_injection_duration_ms_per_min = injections_per_minute * injectionLength_ms;
 
   // Convert the total open time from milliseconds per minute to minutes per minute.

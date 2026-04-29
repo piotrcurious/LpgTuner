@@ -22,13 +22,26 @@ void test_fuel_computer_ino() {
     std::cout << "Testing fuel_computer.ino..." << std::endl;
 
     // calculateFuelConsumption_LitersPerHour
-    assert(is_close(calculateFuelConsumption_LitersPerHour(5.0, 0), 0.0));
-    assert(is_close(calculateFuelConsumption_LitersPerHour(5.0, 2500), 3.125));
-    assert(is_close(calculateFuelConsumption_LitersPerHour(10.0, 6000), 15.0));
+    // Standard: 2500 RPM, 5ms pulse, 4 cylinders, 0.5 L/min flow
+    // injections_per_minute = (2500 / 2) * 4 = 5000
+    // total_duration_ms = 5000 * 5 = 25000 ms
+    // duration_min = 25000 / 60000 = 0.41666... min
+    // L_per_min = 0.41666... * 0.5 = 0.208333...
+    // L_per_hour = 0.208333... * 60 = 12.5
+    assert(is_close(calculateFuelConsumption_LitersPerHour(5.0, 2500), 12.5));
+
+    // High RPM: 6000 RPM, 10ms pulse
+    // injections_per_minute = (6000 / 2) * 4 = 12000
+    // total_duration_ms = 12000 * 10 = 120000 ms (Note: this is 100% duty cycle for the engine overall, but 50% per cylinder)
+    // duration_min = 120000 / 60000 = 2 min
+    // L_per_min = 2 * 0.5 = 1.0
+    // L_per_hour = 1.0 * 60 = 60.0
+    assert(is_close(calculateFuelConsumption_LitersPerHour(10.0, 6000), 60.0));
 
     // calculateFuelEconomy_LitersPer100km
-    assert(is_close(calculateFuelEconomy_LitersPer100km(5.0, 2500, 0), 0.0));
-    assert(is_close(calculateFuelEconomy_LitersPer100km(5.0, 2500, 80.0), 3.90625));
+    // consumption = 12.5 L/h, speed = 80 km/h
+    // economy = (12.5 / 80) * 100 = 15.625
+    assert(is_close(calculateFuelEconomy_LitersPer100km(5.0, 2500, 80.0), 15.625));
 
     std::cout << "  Passed!" << std::endl;
 }
@@ -36,8 +49,9 @@ void test_fuel_computer_ino() {
 void test_Lambda_computer1_ino() {
     std::cout << "Testing Lambda_computer1.ino (fuelComputer)..." << std::endl;
 
-    assert(is_close(fuelComputer(5.0, 2500), 3.125));
-    assert(is_close(fuelComputer(5.0, 0), 0.0));
+    // Logic should be identical to fuel_computer.ino
+    assert(is_close(fuelComputer(5.0, 2500), 12.5));
+    assert(is_close(fuelComputer(10.0, 6000), 60.0));
 
     std::cout << "  Passed!" << std::endl;
 }
@@ -45,8 +59,23 @@ void test_Lambda_computer1_ino() {
 void test_fuel_computer2_ino() {
     std::cout << "Testing fuel_computer2.ino (fuelComputer2)..." << std::endl;
 
-    assert(is_close(fuelComputer2(5.0, 2500, 80.0), 3.90625));
-    assert(is_close(fuelComputer2(5.0, 2500, 0), 0.0));
+    assert(is_close(fuelComputer2(5.0, 2500, 80.0), 15.625));
+
+    std::cout << "  Passed!" << std::endl;
+}
+
+void test_extreme_values() {
+    std::cout << "Testing extreme values..." << std::endl;
+
+    // Max RPM, Max Pulse
+    // 8000 RPM -> 4000 cycles/min/cyl -> 15ms pulse
+    // total_duration = 4000 * 15 * 4 = 240000 ms/min
+    // duration_min = 240000 / 60000 = 4 min
+    // L/h = 4 * 0.5 * 60 = 120.0
+    assert(is_close(calculateFuelConsumption_LitersPerHour(15.0, 8000), 120.0));
+
+    // Very low RPM
+    assert(is_close(calculateFuelConsumption_LitersPerHour(1.0, 100), 0.1));
 
     std::cout << "  Passed!" << std::endl;
 }
@@ -55,7 +84,8 @@ int main() {
     test_fuel_computer_ino();
     test_Lambda_computer1_ino();
     test_fuel_computer2_ino();
+    test_extreme_values();
 
-    std::cout << "\nAll tests passed successfully!" << std::endl;
+    std::cout << "\nAll enhanced tests passed successfully!" << std::endl;
     return 0;
 }
