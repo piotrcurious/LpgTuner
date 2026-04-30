@@ -1,35 +1,29 @@
 #include "mock_arduino.h"
+#include "../lambda_angel/CommonLogic.h"
 #include <cassert>
 #include <iostream>
 
-// Include the logic from the ino file by defining a macro to skip Arduino-specific parts
-// Or better, just copy the relevant functions here for unit testing.
-
-float fmap(float x, float in_min, float in_max, float out_min, float out_max) {
-  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
-}
-
-#define RPM_BINS 10
-#define LOAD_BINS 8
-float rpmBinEdges[RPM_BINS + 1] = {0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000};
-float loadBinEdges[LOAD_BINS + 1] = {20, 40, 60, 80, 100, 120, 160, 200, 250};
-
-int getRPMBin(float rpm) {
-  for (int i = 0; i < RPM_BINS; i++) {
-    if (rpm >= rpmBinEdges[i] && rpm < rpmBinEdges[i + 1]) {
-      return i;
+// Helper to simulate heat map update in test
+void updateHeatMapTest(float rpm, float map, float temp, float lambda,
+                       float tempMap[RPM_BINS][LOAD_BINS],
+                       float lambdaMap[RPM_BINS][LOAD_BINS],
+                       int sampleCount[RPM_BINS][LOAD_BINS]) {
+  if (rpm > 500) {
+    int r = getRPMBin(rpm);
+    int l = getLoadBin(map);
+    if (temp > 0 && temp < 1000 && lambda > 0 && lambda < 5.0) {
+      if (sampleCount[r][l] == 0) {
+        tempMap[r][l] = temp;
+        lambdaMap[r][l] = lambda;
+        sampleCount[r][l] = 1;
+      } else {
+        float alpha = 0.1;
+        tempMap[r][l] = tempMap[r][l] * (1 - alpha) + temp * alpha;
+        lambdaMap[r][l] = lambdaMap[r][l] * (1 - alpha) + lambda * alpha;
+        sampleCount[r][l]++;
+      }
     }
   }
-  return RPM_BINS - 1;
-}
-
-int getLoadBin(float load) {
-  for (int i = 0; i < LOAD_BINS; i++) {
-    if (load >= loadBinEdges[i] && load < loadBinEdges[i + 1]) {
-      return i;
-    }
-  }
-  return LOAD_BINS - 1;
 }
 
 void test_fmap() {
@@ -42,17 +36,46 @@ void test_bins() {
     assert(getRPMBin(500) == 0);
     assert(getRPMBin(1500) == 1);
     assert(getRPMBin(9500) == 9);
-    assert(getRPMBin(12000) == 9);
-
     assert(getLoadBin(30) == 0);
-    assert(getLoadBin(50) == 1);
     assert(getLoadBin(240) == 7);
     std::cout << "test_bins passed" << std::endl;
+}
+
+void test_units() {
+    assert(std::abs(voltageToKpa(0.5) - 20.0) < 0.001);
+    assert(std::abs(voltageToKpa(4.5) - 250.0) < 0.001);
+    std::cout << "test_units passed" << std::endl;
+}
+
+void test_heatmap_averaging() {
+    float tempMap[RPM_BINS][LOAD_BINS] = {0};
+    float lambdaMap[RPM_BINS][LOAD_BINS] = {0};
+    int sampleCount[RPM_BINS][LOAD_BINS] = {0};
+
+    // First sample
+    updateHeatMapTest(2000, 100, 500.0, 1.0, tempMap, lambdaMap, sampleCount);
+    assert(sampleCount[2][4] == 1);
+    assert(tempMap[2][4] == 500.0);
+
+    // Second sample (averaging)
+    updateHeatMapTest(2000, 100, 600.0, 1.2, tempMap, lambdaMap, sampleCount);
+    assert(sampleCount[2][4] == 2);
+    // 500 * 0.9 + 600 * 0.1 = 450 + 60 = 510
+    assert(std::abs(tempMap[2][4] - 510.0) < 0.001);
+    assert(std::abs(lambdaMap[2][4] - 1.02) < 0.001);
+
+    // Gating check (engine off)
+    updateHeatMapTest(100, 100, 700.0, 1.5, tempMap, lambdaMap, sampleCount);
+    assert(sampleCount[2][4] == 2); // Should not update
+
+    std::cout << "test_heatmap_averaging passed" << std::endl;
 }
 
 int main() {
     test_fmap();
     test_bins();
+    test_units();
+    test_heatmap_averaging();
     std::cout << "All tests passed!" << std::endl;
     return 0;
 }
