@@ -75,6 +75,28 @@ void portEXIT_CRITICAL(portMUX_TYPE* mux) {}
 void portENTER_CRITICAL_ISR(portMUX_TYPE* mux) {}
 void portEXIT_CRITICAL_ISR(portMUX_TYPE* mux) {}
 
+static std::map<std::string, std::vector<uint8_t>> mockFlash;
+
+size_t Preferences::putBytes(const char* key, const void* value, size_t len) {
+    const uint8_t* p = (const uint8_t*)value;
+    mockFlash[key] = std::vector<uint8_t>(p, p + len);
+    return len;
+}
+
+size_t Preferences::getBytes(const char* key, void* buf, size_t len) {
+    if (mockFlash.count(key)) {
+        size_t actualLen = std::min(len, mockFlash[key].size());
+        memcpy(buf, mockFlash[key].data(), actualLen);
+        return actualLen;
+    }
+    return 0;
+}
+
+bool Preferences::clear() {
+    mockFlash.clear();
+    return true;
+}
+
 long map(long x, long in_min, long in_max, long out_min, long out_max) {
     if (in_max == in_min) return out_min;
     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;

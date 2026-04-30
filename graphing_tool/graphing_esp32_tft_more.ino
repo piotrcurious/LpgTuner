@@ -4,15 +4,24 @@
 // Button on GPIO 0 (BOOT button) switches visualization modes
 
 #ifdef UNIT_TEST
-#include "tests/mock_tft.h"
+#include "mock_tft.h"
+#include "mock_arduino.h"
 #else
 #include <TFT_eSPI.h>
-#endif
-
 #ifdef ESP32
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #endif
+#endif
+
+#if defined(ESP32) || defined(UNIT_TEST)
+#ifdef UNIT_TEST
+#include "mock_arduino.h"
+#else
+#include <Preferences.h>
+#endif
+#endif
+
 
 // Initialize display
 TFT_eSPI tft = TFT_eSPI();
@@ -107,6 +116,9 @@ void IRAM_ATTR injectorISR();
 void IRAM_ATTR buttonISR();
 void handleButton();
 uint16_t getColorForDiff(float diff);
+void saveLifetimeData();
+void loadLifetimeData();
+void resetLifetimeData();
 void initDisplay();
 void drawGui();
 void readSensors();
@@ -148,6 +160,9 @@ void setup() {
   // Initialize heat map
   clearHeatMap();
   
+  // Load saved data
+  loadLifetimeData();
+
   // Initialize display
   tft.init();
   tft.setRotation(1); // Landscape mode
@@ -173,6 +188,14 @@ void loop() {
     drawCurrentPulseWidth();
     drawSensorReadings();
     drawModeIndicator();
+  }
+
+  // Periodic save
+  static unsigned long lastSaveTime = 0;
+  const unsigned long SAVE_INTERVAL = 30000; // Save every 30 seconds
+  if (millis() - lastSaveTime >= SAVE_INTERVAL) {
+    lastSaveTime = millis();
+    saveLifetimeData();
   }
   
   // Optional: Print debug info to serial
@@ -327,23 +350,22 @@ void handleButton() {
     // Wait to see if it is a long press
     delay(50);
 
-    // In a real Arduino environment, we would check if pin is still LOW
-    // Here we just use a simple state machine or similar if needed.
-    // For now, let's keep it simple: Short press = Mode, Long press = Overlay
-
     // Note: digitalRead(buttonPin) == LOW means pressed
     if (digitalRead(buttonPin) == LOW) {
       // Potentially a long press
       unsigned long duration = 0;
-      while(digitalRead(buttonPin) == LOW && duration < 1000) {
+      while(digitalRead(buttonPin) == LOW && duration < 3000) {
         delay(10);
         duration += 10;
       }
 
-      if (duration >= 600) {
+      if (duration >= 2000) {
+        // Very long press: reset lifetime data
+        resetLifetimeData();
+        drawGui();
+      } else if (duration >= 600) {
         // Long press: switch overlay
         currentOverlay = (OverlayMode)((currentOverlay + 1) % OVERLAY_COUNT);
-        // redraw gui if needed or show indicator
         drawGui();
       } else {
         // Short press: switch visualization mode
@@ -504,6 +526,50 @@ void drawHeatMap() {
       }
     }
   }
+}
+
+void saveLifetimeData() {
+#if defined(ESP32) || defined(UNIT_TEST)
+  Preferences prefs;
+  prefs.begin("tuning-map", false);
+  prefs.putBytes("heatmap", (const void*)heatMap, sizeof(heatMap));
+  prefs.end();
+  Serial.println("Lifetime data saved to flash");
+#endif
+}
+
+void loadLifetimeData() {
+#if defined(ESP32) || defined(UNIT_TEST)
+  Preferences prefs;
+  prefs.begin("tuning-map", true);
+  size_t bytesRead = prefs.getBytes("heatmap", (void*)heatMap, sizeof(heatMap));
+  prefs.end();
+
+  if (bytesRead == sizeof(heatMap)) {
+    Serial.println("Lifetime data loaded from flash");
+    // Reset lastUpdate for all cells as they were just "loaded"
+    for (int c = 0; c < HEATMAP_COLS; c++) {
+      for (int r = 0; r < HEATMAP_ROWS; r++) {
+        if (heatMap[c][r].count > 0) {
+          heatMap[c][r].lastUpdate = millis();
+        }
+      }
+    }
+  } else {
+    Serial.println("No valid lifetime data found in flash");
+  }
+#endif
+}
+
+void resetLifetimeData() {
+#if defined(ESP32) || defined(UNIT_TEST)
+  Preferences prefs;
+  prefs.begin("tuning-map", false);
+  prefs.clear();
+  prefs.end();
+#endif
+  clearHeatMap();
+  Serial.println("Lifetime data reset");
 }
 
 void draw3DSurface() {
