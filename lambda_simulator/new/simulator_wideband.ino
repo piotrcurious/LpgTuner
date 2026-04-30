@@ -1,14 +1,13 @@
 /*
-  Improved Wideband & Narrowband Lambda Simulator
+  Wideband & Narrowband Lambda Simulator with Advanced Engine Dynamics
 
   --------------------
-  Improvements in this version:
+  Features:
   --------------------
-  1.  **Input Filtering:** EMA filtering for smoother response.
-  2.  **Advanced Air Mass Model:** Includes Volumetric Efficiency and Humidity.
-  3.  **Linear Injector Model:** Linear flow with dead time.
-  4.  **Transport Delay Buffer:** Simulates exhaust travel time.
-  5.  **Dual Sensor Modeling:** Linear wideband output and sigmoid narrowband output.
+  1.  **Sensor Warm-up Simulation:** Dual-channel warm-up simulation.
+  2.  **Advanced Manifold Dynamics:** Differentiated filtering for air and fuel.
+  3.  **Transport Delay:** Simulated exhaust travel time.
+  4.  **High-Fidelity Dual Outputs:** Linear wideband and sigmoid narrowband.
 */
 
 #include <driver/dac.h>
@@ -37,16 +36,19 @@ const float MAX_INJ_PULSE_MS = 15.0f;
 const float MIN_MAP_KPA = 20.0f;
 const float MAX_MAP_KPA = 100.0f;
 
+// --- Warm-up & Dynamics ---
+const unsigned long WARMUP_TIME_MS = 8000;  // 8 seconds warm-up for wideband sensor
 const float INJ_FLOW_MG_MS = 8.5f;
 const float INJ_DEAD_TIME_MS = 0.8f;
+const float MANIFOLD_EMA_ALPHA = 0.12f;     // Slower manifold dynamics
+const float INJECTOR_EMA_ALPHA = 0.40f;     // Faster injector response
+const int   DELAY_BUFFER_SIZE = 12;
 
+// --- Wideband Scaling ---
 const float WIDEBAND_MIN_AFR = 10.0f;
 const float WIDEBAND_MAX_AFR = 20.0f;
 const float WIDEBAND_MIN_VOLTAGE = 0.0f;
 const float WIDEBAND_MAX_VOLTAGE = 5.0f;
-
-const float EMA_ALPHA = 0.25f;
-const int   DELAY_BUFFER_SIZE = 12;
 
 //================================================================================
 // --- PHYSICAL CONSTANTS ---
@@ -60,6 +62,7 @@ float filteredInjVal = 2048.0f;
 float filteredMapVal = 2048.0f;
 float afrBuffer[DELAY_BUFFER_SIZE];
 int   bufferIndex = 0;
+unsigned long startTime_ms;
 
 // --- Prototypes ---
 float calculateAirMass_mg(float map_kPa, float airTemp_C, float humidity_percent, float cylinderVolume_L, float ve);
@@ -69,24 +72,28 @@ float mapFloat(float x, float in_min, float in_max, float out_min, float out_max
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("Improved Advanced Lambda Simulator Initialized.");
+  Serial.println("Advanced Lambda Simulator (Improved Dynamics) Initialized.");
 
   analogReadResolution(12);
-  dac_output_enable(DAC_CHANNEL_1); // Narrowband
-  dac_output_enable(DAC_CHANNEL_2); // Wideband
+  dac_output_enable(DAC_CHANNEL_1);
+  dac_output_enable(DAC_CHANNEL_2);
 
   for (int i = 0; i < DELAY_BUFFER_SIZE; i++) afrBuffer[i] = STOICHIOMETRIC_AFR;
+  startTime_ms = millis();
 }
 
 void loop() {
+  unsigned long currentTime = millis();
+  bool isWarmedUp = (currentTime - startTime_ms) >= WARMUP_TIME_MS;
+
   // 1. Filtering
-  filteredInjVal = (EMA_ALPHA * analogRead(POT_INJ_PULSE_PIN)) + ((1.0f - EMA_ALPHA) * filteredInjVal);
-  filteredMapVal = (EMA_ALPHA * analogRead(POT_MAP_PIN)) + ((1.0f - EMA_ALPHA) * filteredMapVal);
+  filteredInjVal = (INJECTOR_EMA_ALPHA * analogRead(POT_INJ_PULSE_PIN)) + ((1.0f - INJECTOR_EMA_ALPHA) * filteredInjVal);
+  filteredMapVal = (MANIFOLD_EMA_ALPHA * analogRead(POT_MAP_PIN)) + ((1.0f - MANIFOLD_EMA_ALPHA) * filteredMapVal);
 
   float injPulseLength_ms = mapFloat(filteredInjVal, 0, 4095, MIN_INJ_PULSE_MS, MAX_INJ_PULSE_MS);
   float map_kPa = mapFloat(filteredMapVal, 0, 4095, MIN_MAP_KPA, MAX_MAP_KPA);
 
-  // 2. Physics
+  // 2. Combustion Model
   float singleCylinderVolume_L = ENGINE_DISPLACEMENT_L / NUM_CYLINDERS;
   float airMass_mg = calculateAirMass_mg(map_kPa, AIR_TEMPERATURE_C, RELATIVE_HUMIDITY_PERCENT, singleCylinderVolume_L, VOLUMETRIC_EFFICIENCY);
   float fuelMass_mg = calculateFuelMass_mg(injPulseLength_ms);
@@ -102,21 +109,32 @@ void loop() {
   float delayedAFR = afrBuffer[bufferIndex];
   float delayedLambda = delayedAFR / STOICHIOMETRIC_AFR;
 
-  // 4. Narrowband Output (Sigmoid)
-  float nbVoltage = getNarrowbandVoltage(delayedLambda);
+  // 4. Output Generation
+  float nbVoltage, wbVoltageTarget;
+
+  if (!isWarmedUp) {
+    nbVoltage = 0.45f;
+    wbVoltageTarget = 0.0f; // Many wideband controllers output 0V or a specific "warming" signal
+  } else {
+    nbVoltage = getNarrowbandVoltage(delayedLambda);
+    wbVoltageTarget = mapFloat(delayedAFR, WIDEBAND_MIN_AFR, WIDEBAND_MAX_AFR, WIDEBAND_MIN_VOLTAGE, WIDEBAND_MAX_VOLTAGE);
+    wbVoltageTarget = constrain(wbVoltageTarget, 0.0f, 5.0f);
+  }
+
+  // Set Narrowband
   dac_output_voltage(DAC_CHANNEL_1, (int)((nbVoltage / 3.3f) * 255));
 
-  // 5. Wideband Output (Linear 0-5V scaled to 0-3.3V)
-  float wbVoltage = mapFloat(delayedAFR, WIDEBAND_MIN_AFR, WIDEBAND_MAX_AFR, WIDEBAND_MIN_VOLTAGE, WIDEBAND_MAX_VOLTAGE);
-  wbVoltage = constrain(wbVoltage, 0.0f, 5.0f);
-  float actualDacVoltage = constrain(wbVoltage, 0.0f, 3.3f);
-  dac_output_voltage(DAC_CHANNEL_2, (int)((actualDacVoltage / 3.3f) * 255));
+  // Set Wideband (constrained to ESP32 3.3V)
+  float actualWbDacVoltage = constrain(wbVoltageTarget, 0.0f, 3.3f);
+  dac_output_voltage(DAC_CHANNEL_2, (int)((actualWbDacVoltage / 3.3f) * 255));
 
-  // 6. Debug
-  Serial.print("AFR (Inst): "); Serial.print(instAFR, 1);
-  Serial.print(" | AFR (Del): "); Serial.print(delayedAFR, 1);
-  Serial.print(" | NB V: "); Serial.print(nbVoltage, 2);
-  Serial.print(" | WB V (Target): "); Serial.println(wbVoltage, 2);
+  // 5. Debug
+  if (currentTime % 500 < 20) {
+    Serial.print("Status: "); Serial.print(isWarmedUp ? "READY" : "WARMING");
+    Serial.print(" | AFR (Del): "); Serial.print(delayedAFR, 1);
+    Serial.print(" | NB V: "); Serial.print(nbVoltage, 2);
+    Serial.print(" | WB V: "); Serial.println(wbVoltageTarget, 2);
+  }
 
   delay(20);
 }
