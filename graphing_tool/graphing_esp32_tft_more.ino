@@ -3,7 +3,16 @@
 // Optimized for ESP32 with 320x240 TFT_eSPI display
 // Button on GPIO 0 (BOOT button) switches visualization modes
 
+#ifdef UNIT_TEST
+#include "tests/mock_tft.h"
+#else
 #include <TFT_eSPI.h>
+#endif
+
+#ifdef ESP32
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#endif
 
 // Initialize display
 TFT_eSPI tft = TFT_eSPI();
@@ -208,6 +217,11 @@ void drawGui() {
   tft.drawString("100", CHART_X_OFFSET - 20, CHART_Y_OFFSET - 5);
 }
 
+#ifdef ESP32
+portMUX_TYPE camMux = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE pulseMux = portMUX_INITIALIZER_UNLOCKED;
+#endif
+
 void readSensors() {
   // Read analog sensors with averaging
   const int samples = 4;
@@ -225,12 +239,28 @@ void readSensors() {
   lambdaValue = map(lambdaSum / samples, 0, 4095, 50, 150) / 100.0;
   
   // Calculate RPM from cam sensor period
+  unsigned long period = 0;
+  bool dataAvailable = false;
+
+#ifdef ESP32
+  portENTER_CRITICAL(&camMux);
   if (newCamData) {
-    noInterrupts();
-    unsigned long period = camPeriod;
+    period = camPeriod;
     newCamData = false;
-    interrupts();
-    
+    dataAvailable = true;
+  }
+  portEXIT_CRITICAL(&camMux);
+#else
+  noInterrupts();
+  if (newCamData) {
+    period = camPeriod;
+    newCamData = false;
+    dataAvailable = true;
+  }
+  interrupts();
+#endif
+
+  if (dataAvailable) {
     if (period > 0 && period < 1000000) {
       rpm = 60000000.0 / period;
       rpm = constrain(rpm, 0, 8000);
@@ -246,12 +276,28 @@ void readSensors() {
 }
 
 void measureInjectorPulseWidth() {
+  unsigned long pw = 0;
+  bool dataAvailable = false;
+
+#ifdef ESP32
+  portENTER_CRITICAL(&pulseMux);
   if (newPulseData) {
-    noInterrupts();
-    unsigned long pw = measuredPulseWidth;
+    pw = measuredPulseWidth;
     newPulseData = false;
-    interrupts();
-    
+    dataAvailable = true;
+  }
+  portEXIT_CRITICAL(&pulseMux);
+#else
+  noInterrupts();
+  if (newPulseData) {
+    pw = measuredPulseWidth;
+    newPulseData = false;
+    dataAvailable = true;
+  }
+  interrupts();
+#endif
+
+  if (dataAvailable) {
     pulseWidth = pw / 1000.0;
     pulseWidth = constrain(pulseWidth, 0, 20);
     
@@ -272,7 +318,7 @@ void switchVisualizationMode() {
   drawGui();
   
   // If switching to heat map, clear old data
-  if (currentMode == MODE_HEAT_MAP || currentMode == MODE_3D_SURFACE) {
+  if (currentMode == MODE_HEAT_MAP || currentMode == MODE_3D_SURFACE || currentMode == MODE_DENSITY_MAP) {
     clearHeatMap();
   }
   
@@ -289,6 +335,7 @@ void switchVisualizationMode() {
     case MODE_3D_SURFACE: modeName = "3D Surface"; break;
     case MODE_AFR_MAP: modeName = "AFR Map"; break;
     case MODE_DENSITY_MAP: modeName = "Density Map"; break;
+    default: modeName = "Unknown"; break;
   }
   
   int textWidth = strlen(modeName) * 12;
@@ -316,6 +363,8 @@ void updateVisualization() {
     case MODE_DENSITY_MAP:
       drawDensityMap();
       break;
+    default:
+      break;
   }
 }
 
@@ -341,9 +390,9 @@ void drawHeatMap() {
   if (rpm < 100) return;
   
   // Calculate cell indices
-  int col = constrain(rpm / 500, 0, HEATMAP_COLS - 1); // 500 RPM per cell
+  int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1); // 500 RPM per cell
   float load = (mapPressure * throttlePos) / 100.0;
-  int row = constrain(load / 11.11, 0, HEATMAP_ROWS - 1); // ~11.11% load per cell
+  int row = constrain((int)(load / 11.11), 0, HEATMAP_ROWS - 1); // ~11.11% load per cell
   
   // Update cell data
   HeatMapCell* cell = &heatMap[col][row];
@@ -380,9 +429,9 @@ void draw3DSurface() {
   if (rpm < 100) return;
   
   // Update heat map data
-  int col = constrain(rpm / 500, 0, HEATMAP_COLS - 1);
+  int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1);
   float load = (mapPressure * throttlePos) / 100.0;
-  int row = constrain(load / 11.11, 0, HEATMAP_ROWS - 1);
+  int row = constrain((int)(load / 11.11), 0, HEATMAP_ROWS - 1);
   
   HeatMapCell* cell = &heatMap[col][row];
   cell->sumPulseWidth += pulseWidth;
@@ -443,9 +492,9 @@ void drawDensityMap() {
   if (rpm < 100) return;
   
   // Update heat map for density counting
-  int col = constrain(rpm / 500, 0, HEATMAP_COLS - 1);
+  int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1);
   float load = (mapPressure * throttlePos) / 100.0;
-  int row = constrain(load / 11.11, 0, HEATMAP_ROWS - 1);
+  int row = constrain((int)(load / 11.11), 0, HEATMAP_ROWS - 1);
   
   heatMap[col][row].count++;
   heatMap[col][row].lastUpdate = millis();
@@ -518,6 +567,7 @@ void drawModeIndicator() {
     case MODE_3D_SURFACE: tft.print("3D Surf"); break;
     case MODE_AFR_MAP: tft.print("AFR Map"); break;
     case MODE_DENSITY_MAP: tft.print("Density"); break;
+    default: tft.print("Unknown"); break;
   }
 }
 
@@ -608,17 +658,25 @@ uint16_t interpolateColor(uint16_t color1, uint16_t color2, float t) {
 void IRAM_ATTR camISR() {
   unsigned long currentTime = micros();
   
+#ifdef ESP32
+  portENTER_CRITICAL_ISR(&camMux);
+#endif
   if (lastCamTime > 0) {
     camPeriod = currentTime - lastCamTime;
     newCamData = true;
   }
-  
   lastCamTime = currentTime;
+#ifdef ESP32
+  portEXIT_CRITICAL_ISR(&camMux);
+#endif
 }
 
 void IRAM_ATTR injectorISR() {
   unsigned long currentTime = micros();
   
+#ifdef ESP32
+  portENTER_CRITICAL_ISR(&pulseMux);
+#endif
   if (digitalRead(injectorPin) == HIGH) {
     injectorOnTime = currentTime;
   } else {
@@ -628,6 +686,9 @@ void IRAM_ATTR injectorISR() {
       newPulseData = true;
     }
   }
+#ifdef ESP32
+  portEXIT_CRITICAL_ISR(&pulseMux);
+#endif
 }
 
 void IRAM_ATTR buttonISR() {
