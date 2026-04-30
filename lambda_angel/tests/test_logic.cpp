@@ -41,6 +41,15 @@ void test_units() {
     std::cout << "test_units passed" << std::endl;
 }
 
+void test_lambda_zones() {
+    assert(getLambdaZone(1.10f) == LAMBDA_LEAN);
+    assert(getLambdaZone(1.00f) == LAMBDA_STOICH);
+    assert(getLambdaZone(0.90f) == LAMBDA_RICH);
+    assert(getLambdaZone(1.04f) == LAMBDA_STOICH);
+    assert(getLambdaZone(0.96f) == LAMBDA_STOICH);
+    std::cout << "test_lambda_zones passed" << std::endl;
+}
+
 void test_heatmap_simulation() {
     float tempMap[RPM_BINS][LOAD_BINS] = {0};
     int sampleCount[RPM_BINS][LOAD_BINS] = {0};
@@ -61,6 +70,7 @@ int main() {
     test_bins();
     test_lowpass();
     test_units();
+    test_lambda_zones();
     test_heatmap_simulation();
     std::cout << "All tests passed!" << std::endl;
     return 0;
