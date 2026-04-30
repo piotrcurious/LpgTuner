@@ -48,20 +48,13 @@ const int analogInPin = 34;
 const int mapSensorPin = 35;
 const int rpmInputPin = 32;
 
-#define MAX_ANALOG_VOLTAGE_A0 3.3
-#define ADC_RESOLUTION_A0 4096
-
-float currentTemp = 0;
-float currentLambda = 0;
-float currentMAP = 0;
-float currentRPM = 0;
+float currentTemp = 0, currentLambda = 0, currentMAP = 0, currentRPM = 0;
 volatile unsigned long rpmPulseCount = 0;
 unsigned long lastRPMCalcTime = 0;
 #define RPM_CALC_INTERVAL 100
 #define PULSES_PER_REV 2
 
-float tempMap[RPM_BINS][LOAD_BINS];
-float lambdaMap[RPM_BINS][LOAD_BINS];
+float tempMap[RPM_BINS][LOAD_BINS], lambdaMap[RPM_BINS][LOAD_BINS];
 int sampleCount[RPM_BINS][LOAD_BINS];
 
 struct WidgetElement {
@@ -82,6 +75,11 @@ WidgetElement layouts[][6] = {
     {"MAP", 4, "MAP:", 170, 40, 2, 100, MODE_DEC, 0, 250, {0, 0, 0xFFE0, 120, 20}},
     {"TBar", 1, "", 10, 80, 1, 500, MODE_BAR, 0, 1000, {0, 0, 0xFD20, 300, 10}},
     {"RGauge", 3, "", 120, 110, 1, 100, MODE_GAUGE, 0, 10000, {0, 0, 0x07E0, 80, 80, 50}}
+  },
+  {
+    {"tempmap", 1, "", 10, 30, 1, 1000, MODE_HEATMAP_TEMP, 0, 850, {0, 0, 0xFFFF, 280, 160}},
+    {"title", 0, "Engine Maps", 80, 5, 2, 10000, MODE_DEC, 0, 0, {0, 0, 0xFFE0}},
+    {"",0,"",0,0,0,0,0,0,0,{0}},{"",0,"",0,0,0,0,0,0,0,{0}},{"",0,"",0,0,0,0,0,0,0,{0}},{"",0,"",0,0,0,0,0,0,0,{0}}
   }
 };
 
@@ -91,12 +89,11 @@ void readSensors() {
   if (millis() - last_conversion_time >= MAX6675_CONVERSION_RATE) {
     thermoCouple.read(); currentTemp = thermoCouple.getTemperature(); last_conversion_time = millis();
   }
-  currentLambda = (analogRead(analogInPin) * (MAX_ANALOG_VOLTAGE_A0 / ADC_RESOLUTION_A0)) / 3.3;
-  currentMAP = voltageToKpa(analogRead(mapSensorPin) * (MAX_ANALOG_VOLTAGE_A0 / ADC_RESOLUTION_A0));
+  currentLambda = (analogRead(analogInPin) * (3.3 / 4096.0)) / 3.3;
+  currentMAP = voltageToKpa(analogRead(mapSensorPin) * (3.3 / 4096.0));
   if (millis() - lastRPMCalcTime >= RPM_CALC_INTERVAL) {
     noInterrupts(); unsigned long pulses = rpmPulseCount; rpmPulseCount = 0; interrupts();
-    float timeSeconds = (millis() - lastRPMCalcTime) / 1000.0;
-    currentRPM = (pulses / PULSES_PER_REV) * (60.0 / timeSeconds);
+    currentRPM = (pulses / PULSES_PER_REV) * (60.0 / (RPM_CALC_INTERVAL / 1000.0));
     lastRPMCalcTime = millis();
   }
 }
@@ -105,8 +102,8 @@ void updateHeatMaps() {
   if (currentRPM > 500) {
     int r = getRPMBin(currentRPM), l = getLoadBin(currentMAP);
     if (currentTemp > 0 && currentLambda > 0) {
-      if (sampleCount[r][l] == 0) { tempMap[r][l] = currentTemp; lambdaMap[r][l] = currentLambda; sampleCount[r][l] = 1; }
-      else { tempMap[r][l] = tempMap[r][l] * 0.9 + currentTemp * 0.1; lambdaMap[r][l] = lambdaMap[r][l] * 0.9 + currentLambda * 0.1; sampleCount[r][l]++; }
+      int prev = sampleCount[r][l]; updateMapSample(tempMap[r][l], currentTemp, sampleCount[r][l]);
+      int d = prev; updateMapSample(lambdaMap[r][l], currentLambda, d);
     }
   }
 }
@@ -119,15 +116,26 @@ void setup() {
 
 void loop() {
   readSensors(); updateHeatMaps();
-  WidgetElement* layout = layouts[0];
+  static unsigned long lastLC = 0; static int curL = 0;
+  if (millis() - lastLC >= 10000) { lastLC = millis(); curL = (curL + 1) % 2; tft.fillScreen(0); }
+  WidgetElement* layout = layouts[curL];
   for (int i = 0; i < 6; i++) {
     static unsigned long lastUpd[6];
-    if (millis() - lastUpd[i] >= layout[i].rate) {
+    if (layout[i].name != "" && millis() - lastUpd[i] >= layout[i].rate) {
       lastUpd[i] = millis();
       float val = (layout[i].source == 1) ? currentTemp : (layout[i].source == 2) ? currentLambda : (layout[i].source == 3) ? currentRPM : currentMAP;
-      tft.fillRect(layout[i].x, layout[i].y, 150, 20, 0);
-      tft.setCursor(layout[i].x, layout[i].y); tft.setTextColor(layout[i].params[2]); tft.setTextSize(layout[i].font);
-      tft.print(layout[i].label); tft.print(val, 1);
+      if (layout[i].mode == MODE_HEATMAP_TEMP) {
+        int cw = layout[i].params[3]/RPM_BINS, ch = layout[i].params[4]/LOAD_BINS;
+        for(int r=0; r<RPM_BINS; r++) for(int l=0; l<LOAD_BINS; l++) {
+          uint16_t c = sampleCount[r][l]>0 ? getTempColor(tempMap[r][l], layout[i].value_min, layout[i].value_max) : 0x7BEF;
+          tft.fillRect(layout[i].x + r*cw, layout[i].y + (LOAD_BINS-1-l)*ch, cw-1, ch-1, c);
+        }
+      } else {
+        tft.fillRect(layout[i].x, layout[i].y, 150, 20, 0); tft.setCursor(layout[i].x, layout[i].y);
+        tft.setTextColor(layout[i].params[2]); tft.setTextSize(layout[i].font);
+        tft.print(layout[i].label); tft.print(val, 1);
+        if (layout[i].mode == MODE_BAR) tft.fillRect(layout[i].x, layout[i].y+15, fmap(val, layout[i].value_min, layout[i].value_max, 0, layout[i].params[3]), layout[i].params[4], layout[i].params[2]);
+      }
     }
   }
 }
