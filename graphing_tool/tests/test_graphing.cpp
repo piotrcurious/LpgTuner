@@ -56,7 +56,7 @@ void test_pulse_width_measurement() {
     // Simulate injector ON
     setDigitalRead(injectorPin, HIGH);
     advance_micros(500000); // Start at 500ms
-    unsigned long startTime = micros();
+    // unsigned long startTime = micros();
     injectorISR();
 
     // Simulate injector OFF after 2ms
@@ -197,6 +197,59 @@ void test_density_map() {
     std::cout << "Density Map test passed!" << std::endl;
 }
 
+void test_lifetime_and_diff() {
+    std::cout << "Testing Lifetime Average and Diff..." << std::endl;
+
+    clearHeatMap();
+    currentOverlay = OVERLAY_NORMAL;
+
+    rpm = 1000;
+    throttlePos = 100;
+    mapPressure = 11.12; // Row 1
+
+    // First sample: 10ms
+    pulseWidth = 10.0;
+    drawHeatMap();
+
+    int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1);
+    int row = constrain((int)((mapPressure * throttlePos / 100.0) / 11.11), 0, HEATMAP_ROWS - 1);
+    std::cout << "RPM: " << rpm << " -> Col: " << col << std::endl;
+    std::cout << "Load: " << (mapPressure * throttlePos / 100.0) << " -> Row: " << row << std::endl;
+
+    assert(heatMap[col][row].count == 1);
+    assert(heatMap[col][row].avgPulseWidth == 10.0f);
+    assert(heatMap[col][row].sumPulseWidth == 10.0f);
+
+    // Second sample: 20ms
+    pulseWidth = 20.0;
+    drawHeatMap();
+
+    assert(heatMap[col][row].count == 2);
+    // EMA: 10*0.9 + 20*0.1 = 9 + 2 = 11
+    assert(std::abs(heatMap[col][row].avgPulseWidth - 11.0f) < 0.001f);
+    // Lifetime: (10 + 20) / 2 = 15
+    assert(heatMap[col][row].sumPulseWidth == 30.0f);
+
+    float lifetimeAvg = heatMap[col][row].sumPulseWidth / heatMap[col][row].count;
+    assert(lifetimeAvg == 15.0f);
+
+    // Diff: EMA - Lifetime = 11 - 15 = -4
+    float diff = heatMap[col][row].avgPulseWidth - lifetimeAvg;
+    assert(diff == -4.0f);
+
+    // Test color for diff
+    uint16_t cNeg = getColorForDiff(-2.0); // Full scale negative -> Blue
+    assert(cNeg == TFT_BLUE);
+
+    uint16_t cPos = getColorForDiff(2.0); // Full scale positive -> Red
+    assert(cPos == TFT_RED);
+
+    uint16_t cZero = getColorForDiff(0.0); // Zero diff -> Green
+    assert(cZero == TFT_GREEN);
+
+    std::cout << "Lifetime Average and Diff test passed!" << std::endl;
+}
+
 int main() {
     arduino_setup();
 
@@ -207,6 +260,7 @@ int main() {
     test_heatmap_update();
     test_color_functions();
     test_density_map();
+    test_lifetime_and_diff();
 
     std::cout << "All tests passed!" << std::endl;
     return 0;

@@ -37,16 +37,25 @@ enum VisualizationMode {
   MODE_COUNT
 };
 
+// Overlay modes
+enum OverlayMode {
+  OVERLAY_NORMAL,        // Show current EMA value
+  OVERLAY_LIFETIME,      // Show lifetime average
+  OVERLAY_DIFF,          // Show EMA - Lifetime Average (Deviation)
+  OVERLAY_COUNT
+};
+
 VisualizationMode currentMode = MODE_SCATTER_MAP;
+OverlayMode currentOverlay = OVERLAY_NORMAL;
 
 // Heat map data structure (12x9 grid = 108 cells)
 const int HEATMAP_COLS = 12;  // RPM divisions
 const int HEATMAP_ROWS = 9;   // Load divisions
 struct HeatMapCell {
-  float sumPulseWidth;
+  float sumPulseWidth;   // Lifetime sum for average
   float sumLambda;
-  float avgPulseWidth;   // For exponential moving average
-  int count;
+  float avgPulseWidth;   // For exponential moving average (EMA)
+  int count;             // Lifetime count
   unsigned long lastUpdate;
 };
 HeatMapCell heatMap[HEATMAP_COLS][HEATMAP_ROWS];
@@ -96,6 +105,8 @@ const unsigned long DISPLAY_UPDATE_INTERVAL = 100;
 void IRAM_ATTR camISR();
 void IRAM_ATTR injectorISR();
 void IRAM_ATTR buttonISR();
+void handleButton();
+uint16_t getColorForDiff(float diff);
 void initDisplay();
 void drawGui();
 void readSensors();
@@ -153,10 +164,7 @@ void loop() {
   controlInjectorGauge();
   
   // Handle mode switching
-  if (buttonPressed) {
-    buttonPressed = false;
-    switchVisualizationMode();
-  }
+  handleButton();
   
   // Update display at controlled intervals
   if (millis() - lastDisplayUpdate >= DISPLAY_UPDATE_INTERVAL) {
@@ -314,6 +322,42 @@ void controlInjectorGauge() {
   analogWrite(injectorGaugePin, pwmValue);
 }
 
+void handleButton() {
+  if (buttonPressed) {
+    // Wait to see if it is a long press
+    delay(50);
+
+    // In a real Arduino environment, we would check if pin is still LOW
+    // Here we just use a simple state machine or similar if needed.
+    // For now, let's keep it simple: Short press = Mode, Long press = Overlay
+
+    // Note: digitalRead(buttonPin) == LOW means pressed
+    if (digitalRead(buttonPin) == LOW) {
+      // Potentially a long press
+      unsigned long duration = 0;
+      while(digitalRead(buttonPin) == LOW && duration < 1000) {
+        delay(10);
+        duration += 10;
+      }
+
+      if (duration >= 600) {
+        // Long press: switch overlay
+        currentOverlay = (OverlayMode)((currentOverlay + 1) % OVERLAY_COUNT);
+        // redraw gui if needed or show indicator
+        drawGui();
+      } else {
+        // Short press: switch visualization mode
+        switchVisualizationMode();
+      }
+    } else {
+      // Very short press
+      switchVisualizationMode();
+    }
+
+    buttonPressed = false;
+  }
+}
+
 void switchVisualizationMode() {
   currentMode = (VisualizationMode)((currentMode + 1) % MODE_COUNT);
   
@@ -417,15 +461,40 @@ void drawHeatMap() {
   for (int c = 0; c < HEATMAP_COLS; c++) {
     for (int r = 0; r < HEATMAP_ROWS; r++) {
       if (heatMap[c][r].count > 0) {
-        float avgPW = heatMap[c][r].avgPulseWidth;
-        uint16_t color = getColorForPulseWidth(avgPW);
+        float valToShow = 0;
+        uint16_t color = 0;
         
+        switch(currentOverlay) {
+          case OVERLAY_NORMAL:
+            valToShow = heatMap[c][r].avgPulseWidth;
+            color = getColorForPulseWidth(valToShow);
+            break;
+          case OVERLAY_LIFETIME:
+            valToShow = heatMap[c][r].sumPulseWidth / heatMap[c][r].count;
+            color = getColorForPulseWidth(valToShow);
+            break;
+          case OVERLAY_DIFF:
+            {
+              // Show deviation: EMA - Lifetime Average
+              // Scale color around middle (Green = 0 diff, Red = Positive, Blue = Negative)
+              float lifetimeAvg = heatMap[c][r].sumPulseWidth / heatMap[c][r].count;
+              float diff = heatMap[c][r].avgPulseWidth - lifetimeAvg;
+              color = getColorForDiff(diff);
+            }
+            break;
+          default: break;
+        }
+
         // Fade old cells (not updated in last 10 seconds)
+        // Lifetime mode doesn't fade as much
         unsigned long timeSinceUpdate = millis() - heatMap[c][r].lastUpdate;
         if (timeSinceUpdate > 10000) {
-           // More gradual fade
-           if (timeSinceUpdate > 30000) color = COLOR_BACKGROUND;
-           else color = (color >> 1) & 0x7BEF; // Darken by 50%
+           if (currentOverlay != OVERLAY_LIFETIME) {
+             if (timeSinceUpdate > 30000) color = COLOR_BACKGROUND;
+             else color = (color >> 1) & 0x7BEF; // Darken by 50%
+           } else if (timeSinceUpdate > 60000) {
+             color = (color >> 1) & 0x7BEF; // Darken slightly after 1 min
+           }
         }
         
         int x = CHART_X_OFFSET + c * cellWidth;
@@ -577,7 +646,7 @@ void drawSensorReadings() {
 }
 
 void drawModeIndicator() {
-  tft.fillRect(DISPLAY_WIDTH - 80, 18, 75, 10, COLOR_BACKGROUND);
+  tft.fillRect(DISPLAY_WIDTH - 80, 18, 75, 20, COLOR_BACKGROUND);
   tft.setTextSize(1);
   tft.setTextColor(TFT_CYAN, COLOR_BACKGROUND);
   tft.setCursor(DISPLAY_WIDTH - 78, 18);
@@ -589,6 +658,15 @@ void drawModeIndicator() {
     case MODE_AFR_MAP: tft.print("AFR Map"); break;
     case MODE_DENSITY_MAP: tft.print("Density"); break;
     default: tft.print("Unknown"); break;
+  }
+
+  tft.setCursor(DISPLAY_WIDTH - 78, 28);
+  tft.setTextColor(TFT_YELLOW, COLOR_BACKGROUND);
+  switch(currentOverlay) {
+    case OVERLAY_NORMAL: tft.print("EMA"); break;
+    case OVERLAY_LIFETIME: tft.print("Lifetime"); break;
+    case OVERLAY_DIFF: tft.print("Diff"); break;
+    default: break;
   }
 }
 
@@ -634,6 +712,21 @@ uint16_t getColorForPulseWidth(float pw) {
   }
   
   return tft.color565(r, g, b);
+}
+
+uint16_t getColorForDiff(float diff) {
+  // diff is EMA - LifetimeAvg
+  // Range: -2ms to +2ms
+  float range = 2.0;
+  float normalized = constrain(diff, -range, range) / range; // -1.0 to 1.0
+
+  if (normalized < 0) {
+    // Negative diff (Lower than avg) -> Blue gradient
+    return interpolateColor(TFT_GREEN, TFT_BLUE, -normalized);
+  } else {
+    // Positive diff (Higher than avg) -> Red gradient
+    return interpolateColor(TFT_GREEN, TFT_RED, normalized);
+  }
 }
 
 uint16_t getColorForAFR(float lambda) {
