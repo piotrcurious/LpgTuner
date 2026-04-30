@@ -1,0 +1,17 @@
+The closest match is not a single patent or product, but a cluster of older ideas that your repo combines in one place.
+
+Your split_bank_lambda project reads two narrowband lambda sensors as analog inputs, filters them, uses sliding-mode control, drives two DAC outputs as fuel-offset commands, and includes “drift” and “limit” emulation when the bank outputs diverge too much or hit saturation. The README explicitly frames it as a split 4-cylinder / 2-manifold / 2-probe controller, with separate lean and rich targets per subgroup. 
+
+The strongest historical ancestor is the old multi-cylinder “selective lambda control” patent EP0826100B1, which describes a two-loop structure: one outer loop for the global mean lambda, and an inner loop for cylinder-selective lambda control. That patent also points out the key limitation of a conventional probe: it sees the combined exhaust from all cylinders, whereas per-cylinder sensors let the controller adjust fuel separately for each cylinder group. 
+
+The closest pair-wise analogue is DE10115902C1 from 2001/2002. It explicitly describes adjusting fuel “for each 2 cylinders” by enriching one cylinder and weakening the other until an exhaust-gas parameter reaches an extremum. In other words, it is very close to your banked idea mathematically: one subgroup goes richer, the paired subgroup goes leaner, and the system seeks the best combined exhaust result. 
+
+A more modern OEM-style cousin is US20210310435A1, “Split lambda fueling operation systems and methods.” That patent describes “default split lambda” and “rolling split lambda” modes where the engine intentionally alternates rich and lean cylinder groups, mainly to balance torque, exhaust temperature, and NVH. It is not an LPG retrofit patent, but conceptually it is the same family: banked rich/lean fueling rather than a single global lambda target. 
+
+In aftermarket LPG hardware, the same split-bank notion is already standard as a wiring and tuning pattern. Prins manuals explicitly provide separate wiring for lambda sensor bank 1 and bank 2, and AEB manuals show bank 1 / bank 2 oxygen sensor connections, separate injector-bank wiring, and OBD access to fuel trims and rear-lambda voltage for calibration. One AEB manual even says the bank sensor signal may be used only to display values on the PC, not necessarily for the ECU’s own operating calculations. 
+
+The other very close implementation family is dual-fuel / piggyback ECU emulation. US8412439B2 describes a second ECU that modifies the first ECU’s injector output while returning an unmodified signal so the original ECU remains “happy” and does not flag a fault. WO2010103285A1 likewise describes a lambda sensor feeding a second ECU that uses closed-loop exhaust oxygen feedback to adjust the injected fuel mix. That is structurally close to your repo’s “offset controller + emulation pins” approach. 
+
+So the most accurate classification is: the broad idea is well precedented, especially in split-bank / banked lambda control and in dual-ECU LPG emulation. What looks more specific in your repo is the exact implementation style: ESP32-based analog sensor reading, SMC on narrowband probes, DAC-generated offset output, and explicit drift/saturation emulation logic. I did not find a public patent or product that matched that exact bundle end-to-end in this pass. 
+
+If you want, I can turn this into a claim-by-claim novelty map against your repository’s actual control blocks.
