@@ -5,17 +5,27 @@ Lambda Angel is a diagnostic and monitoring tool for engine exhaust gas paramete
 ## Features
 
 - **Real-time Monitoring**: High-speed acquisition and display of Lambda and Temperature data.
-- **Engine Mapping**: (In advanced versions) Logs data into RPM vs Load (MAP) heat maps for engine tuning.
-- **Multiple Layouts**: Toggle between dashboard views, historical graphs, and heat maps.
-- **Hardware Support**: Designed for ESP32 (TFT versions (TFT_eSPI and LovyanGFX)) and ESP8266/ESP32 (OLED versions).
+- **Engine Mapping**: Logs data into RPM vs Load (MAP) heat maps for engine tuning.
+- **Multiple Layouts**: Toggle between dashboard views and historical engine maps.
+- **High Performance**: Optimized implementations for TFT_eSPI and LovyanGFX.
+- **Shared Logic**: Centralized core calculations for consistency and testability.
 
 ## Project Structure
 
-- `lambda_angel.ino`: Original version for SSD1306 OLED displays.
-- `lambda_angel_tft.ino`: Ported version for 320x240 TFT displays using TFT_eSPI.
-- `lambda_angel_tft_map.ino`: TFT version with basic data logging.
-- `lambda_angel_tft_map3.ino`: Most advanced version featuring RPM/MAP-indexed heat maps for Temperature and Lambda.
-- `lambda_angel_lovyangfx.ino`: Port of the advanced version to the LovyanGFX library for improved performance.
+- `lambda_angel_oled/`: Version for 128x64 SSD1306 OLED displays.
+- `lambda_angel_tft/`: Version for 320x240 TFT displays using TFT_eSPI.
+- `lambda_angel_tft_map3/`: Advanced TFT version with RPM/MAP-indexed heat maps.
+- `lambda_angel_lovyangfx/`: Port of the advanced version to the LovyanGFX library for improved performance.
+- `tests/`: C++ unit testing framework for core logic.
+
+## Shared Logic (`CommonLogic.h`)
+
+All project versions share a common header that implements:
+- Physical unit conversions (e.g., MAP voltage to kPa).
+- Engine state binning (RPM and Load indexing).
+- Low-pass filtering for sensor stability.
+- Dynamic color mapping for Temperature and Lambda visualization.
+- Recursive averaging for engine heat maps.
 
 ## Hardware Requirements
 
@@ -24,7 +34,7 @@ Lambda Angel is a diagnostic and monitoring tool for engine exhaust gas paramete
 - **EGT Sensor**: MAX6675 thermocouple interface.
 - **Lambda Sensor**: Narrowband or Wideband (via analog controller output).
 - **MAP Sensor**: Standard 0-5V analog manifold pressure sensor.
-- **RPM Input**: Pulse signal from ECU or ignition coil (optically isolated recommended).
+- **RPM Input**: Pulse signal (optically isolated recommended).
 
 ## Pinout (ESP32 Example)
 
@@ -38,12 +48,10 @@ Lambda Angel is a diagnostic and monitoring tool for engine exhaust gas paramete
 | MAP Input | 35 |
 | RPM Input | 32 |
 
-## How it Works
+## Testing
 
-The system uses a flexible "Widget" architecture. Each display layout is defined as an array of widgets, where each widget is mapped to a data source (Temp, Lambda, RPM, etc.) and a display mode (Decimal, Bar, Graph, Gauge, or Heat Map).
-
-The Heat Map mode is particularly useful for tuning, as it automatically averages sensor readings into bins based on the current engine state (RPM and Load), allowing the tuner to see lean/rich spots or high-temp areas across the entire operating range.
-
-## Development Status
-
-Current versions include both `TFT_eSPI` and `LovyanGFX` implementations. Future improvements include porting to `LovyanGFX` for enhanced performance and DMA-based rendering.
+Core logic is verified using a C++ unit test suite. To run the tests:
+```bash
+cd lambda_angel/tests
+make run
+```

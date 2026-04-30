@@ -52,7 +52,7 @@ void drawWidget(Widget& w) {
   } else if (w.mode == 0x30) {
     int h = w.p[2], v = (int)fmap(val, w.minV, w.maxV, 0, h);
     for(int j=0; j<63; j++) buffer0[j] = buffer0[j+1];
-    buffer0[63] = v;
+    buffer0[63] = (float)v;
     display.fillRect(w.x, w.y, 64, h, BLACK);
     for(int j=0; j<64; j++) display.drawPixel(w.x + j, w.y + h - (int)buffer0[j], WHITE);
   }
