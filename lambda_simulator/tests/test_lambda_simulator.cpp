@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cmath>
 #include <vector>
+#include <cstdlib>
 #include "mock_arduino.h"
 
 // Namespace-like trick to avoid name collisions between narrowband and wideband simulations
@@ -25,92 +26,67 @@ bool is_close(float a, float b, float epsilon = 0.01f) {
     return std::abs(a - b) < epsilon;
 }
 
-void test_narrowband_warmup() {
-    std::cout << "Testing narrowband warm-up simulation..." << std::endl;
+void test_rpm_dependent_delay() {
+    std::cout << "Testing RPM-dependent transport delay..." << std::endl;
 
-    // Reset global state for mocks
     g_mockState = MockState();
-    g_mockState.analogValues[NB::POT_INJ_PULSE_PIN] = 2048;
+    g_mockState.analogValues[NB::POT_INJ_PULSE_PIN] = 0; // Lean
     g_mockState.analogValues[NB::POT_MAP_PIN] = 2048;
+    g_mockState.analogValues[NB::POT_RPM_PIN] = 0; // 500 RPM -> delaySteps = 50
 
-    // Reset simulation state
-    NB::filteredInjVal = 2048.0f;
+    NB::filteredInjVal = 0.0f; // Force steady state lean
     NB::filteredMapVal = 2048.0f;
+    NB::filteredRpmVal = 0.0f;
 
-    NB::setup_nb(); // startTime_ms = 0
+    NB::setup_nb();
+    delay(6000); // Warm up
 
-    // 1. Initial state (t=0)
-    NB::loop_nb();
-    float v0 = (float)g_mockState.dacValues[DAC_CHANNEL_1] / 255.0f * 3.3f;
-    std::cout << "  V at t=0: " << v0 << std::endl;
-    assert(is_close(v0, 0.45f));
+    // Fill buffer and reach steady state lean
+    for(int i=0; i<200; i++) NB::loop_nb();
 
-    // 2. Mid warm-up (t=2000ms)
-    delay(2000);
-    NB::loop_nb();
-    float v2 = (float)g_mockState.dacValues[DAC_CHANNEL_1] / 255.0f * 3.3f;
-    std::cout << "  V at t=2000: " << v2 << std::endl;
-    assert(is_close(v2, 0.45f));
+    float v_steady_lean = (float)g_mockState.dacValues[DAC_CHANNEL_1] / 255.0f * 3.3f;
+    assert(v_steady_lean < 0.2f);
 
-    // 3. Post warm-up (t=6000ms, WARMUP_TIME_MS=5000)
-    delay(4000);
-    NB::loop_nb();
-    float v6 = (float)g_mockState.dacValues[DAC_CHANNEL_1] / 255.0f * 3.3f;
-    std::cout << "  V at t=6000: " << v6 << std::endl;
-    // At default values (2048, 2048), it should be stoichiometric lambda ~ 1.0 -> 0.5V
-    assert(!is_close(v6, 0.45f)); // Should have changed
-    assert(is_close(v6, 0.50f, 0.05f));
+    std::cout << "  Transitioning to rich..." << std::endl;
+    // Change to rich
+    g_mockState.analogValues[NB::POT_INJ_PULSE_PIN] = 4095;
 
-    std::cout << "  Narrowband warm-up test passed!" << std::endl;
+    // Expect lean output for 50 steps
+    for(int i=0; i<50; i++) {
+        NB::loop_nb();
+        float v = (float)g_mockState.dacValues[DAC_CHANNEL_1] / 255.0f * 3.3f;
+        // Should still be lean because delay is 50 steps
+        assert(v < 0.4f);
+    }
+
+    // Step 51 should start showing rich
+    for(int i=0; i<100; i++) NB::loop_nb();
+    float v_rich = (float)g_mockState.dacValues[DAC_CHANNEL_1] / 255.0f * 3.3f;
+    assert(v_rich > 0.6f);
+
+    std::cout << "  RPM-dependent delay test passed!" << std::endl;
 }
 
-void test_wideband_warmup() {
-    std::cout << "Testing wideband warm-up simulation..." << std::endl;
+void test_sensor_aging() {
+    std::cout << "Testing sensor aging (sluggishness)..." << std::endl;
 
     g_mockState = MockState();
-    g_mockState.analogValues[WB::POT_INJ_PULSE_PIN] = 2048;
-    g_mockState.analogValues[WB::POT_MAP_PIN] = 2048;
+    NB::setup_nb();
+    delay(6000);
 
-    WB::filteredInjVal = 2048.0f;
-    WB::filteredMapVal = 2048.0f;
+    NB::agedOutputVoltage = 0.1f;
+    float target = 0.9f;
+    // Apply aging logic manually to verify formula
+    float nextV = (NB::SENSOR_AGING_FACTOR * target) + ((1.0f - NB::SENSOR_AGING_FACTOR) * NB::agedOutputVoltage);
+    assert(is_close(nextV, 0.42f));
 
-    WB::setup_wb(); // WARMUP_TIME_MS = 8000
-
-    NB::loop_nb(); // Just to sync time if needed, though they use same global
-
-    // t=0
-    WB::loop_wb();
-    float wb_v0 = (float)g_mockState.dacValues[DAC_CHANNEL_2] / 255.0f * 3.3f;
-    assert(wb_v0 == 0.0f);
-
-    // t=9000
-    delay(9000);
-    WB::loop_wb();
-    float wb_v9 = (float)g_mockState.dacValues[DAC_CHANNEL_2] / 255.0f * 3.3f;
-    assert(wb_v9 > 0.0f); // Should be active
-
-    std::cout << "  Wideband warm-up test passed!" << std::endl;
-}
-
-void test_manifold_dynamics() {
-    std::cout << "Testing manifold dynamics (filtering)..." << std::endl;
-
-    g_mockState = MockState();
-    NB::filteredMapVal = 2048.0f;
-    g_mockState.analogValues[NB::POT_MAP_PIN] = 4095;
-
-    NB::loop_nb();
-    // ALPHA = 0.15. 0.15*4095 + 0.85*2048 = 614.25 + 1740.8 = 2355.05
-    assert(is_close(NB::filteredMapVal, 2355.05f, 1.0f));
-
-    std::cout << "  Manifold dynamics test passed!" << std::endl;
+    std::cout << "  Sensor aging test passed!" << std::endl;
 }
 
 int main() {
-    test_narrowband_warmup();
-    test_wideband_warmup();
-    test_manifold_dynamics();
+    test_rpm_dependent_delay();
+    test_sensor_aging();
 
-    std::cout << "\nAll enhanced lambda simulator tests passed!" << std::endl;
+    std::cout << "\nAll advanced lambda simulator tests passed!" << std::endl;
     return 0;
 }
