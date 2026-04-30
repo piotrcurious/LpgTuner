@@ -10,7 +10,7 @@ TFT_eSPI tft = TFT_eSPI();
 #include "MAX6675.h"
 const int selectPin = 5;
 MAX6675 thermoCouple(selectPin);
-uint32_t last_conversion_time = 0; 
+uint32_t last_conversion_time = 0;
 #define MAX6675_CONVERSION_RATE 200
 
 const int analogInPin = 34;

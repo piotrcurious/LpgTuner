@@ -22,6 +22,7 @@ static float rpmBinEdges[RPM_BINS + 1] = {0, 1000, 2000, 3000, 4000, 5000, 6000,
 static float loadBinEdges[LOAD_BINS + 1] = {20, 40, 60, 80, 100, 120, 160, 200, 250};
 
 inline int getRPMBin(float rpm) {
+  if (rpm < 0) return 0;
   for (int i = 0; i < RPM_BINS; i++) {
     if (rpm >= rpmBinEdges[i] && rpm < rpmBinEdges[i + 1]) {
       return i;
@@ -31,12 +32,24 @@ inline int getRPMBin(float rpm) {
 }
 
 inline int getLoadBin(float load) {
+  if (load < loadBinEdges[0]) return 0;
   for (int i = 0; i < LOAD_BINS; i++) {
     if (load >= loadBinEdges[i] && load < loadBinEdges[i + 1]) {
       return i;
     }
   }
   return LOAD_BINS - 1;
+}
+
+// Unified Map Update Logic
+inline void updateMapSample(float& mapValue, float newValue, int& count, float alpha = 0.1) {
+  if (count == 0) {
+    mapValue = newValue;
+    count = 1;
+  } else {
+    mapValue = mapValue * (1.0f - alpha) + newValue * alpha;
+    count++;
+  }
 }
 
 inline uint16_t color565(uint8_t r, uint8_t g, uint8_t b) {

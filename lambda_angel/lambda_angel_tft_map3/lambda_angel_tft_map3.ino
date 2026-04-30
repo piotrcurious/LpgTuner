@@ -28,7 +28,7 @@ TFT_eSPI tft = TFT_eSPI();
 const int selectPin = 5; // CS pin for MAX6675
 
 MAX6675 thermoCouple(selectPin);
-uint32_t last_conversion_time = 0; 
+uint32_t last_conversion_time = 0;
 #define MAX6675_CONVERSION_RATE 200
 
 // Input pins
@@ -146,20 +146,13 @@ void updateHeatMaps() {
   if (currentRPM > 500) { // Only log when engine is running
     int rpmBin = getRPMBin(currentRPM);
     int loadBin = getLoadBin(currentMAP);
-    
+
     // Validate readings before updating map
     if (currentTemp > 0 && currentTemp < 1000 && currentLambda > 0 && currentLambda < 5.0) {
-      // Running average
-      if (sampleCount[rpmBin][loadBin] == 0) {
-        tempMap[rpmBin][loadBin] = currentTemp;
-        lambdaMap[rpmBin][loadBin] = currentLambda;
-        sampleCount[rpmBin][loadBin] = 1;
-      } else {
-        float alpha = 0.1; // Smoothing factor
-        tempMap[rpmBin][loadBin] = tempMap[rpmBin][loadBin] * (1 - alpha) + currentTemp * alpha;
-        lambdaMap[rpmBin][loadBin] = lambdaMap[rpmBin][loadBin] * (1 - alpha) + currentLambda * alpha;
-        sampleCount[rpmBin][loadBin]++;
-      }
+      int prevCount = sampleCount[rpmBin][loadBin];
+      updateMapSample(tempMap[rpmBin][loadBin], currentTemp, sampleCount[rpmBin][loadBin]);
+      int dummyCount = prevCount;
+      updateMapSample(lambdaMap[rpmBin][loadBin], currentLambda, dummyCount);
     }
   }
 }
@@ -203,30 +196,14 @@ void displayGraph(WidgetElement widget, float value, float* buffer, int bufferSi
   }
 }
 
-void displayHeatMapTemp(WidgetElement widget) {
+void displayHeatMap(WidgetElement widget, float dataMap[RPM_BINS][LOAD_BINS], bool isTemp) {
   int cellWidth = widget.params[3] / RPM_BINS;
   int cellHeight = widget.params[4] / LOAD_BINS;
   for (int rpm = 0; rpm < RPM_BINS; rpm++) {
     for (int load = 0; load < LOAD_BINS; load++) {
       int x = widget.x + rpm * cellWidth;
       int y = widget.y + (LOAD_BINS - 1 - load) * cellHeight;
-      uint16_t color = (sampleCount[rpm][load] > 0) ? getTempColor(tempMap[rpm][load], widget.value_min, widget.value_max) : DARKGREY;
-      tft.fillRect(x, y, cellWidth - 1, cellHeight - 1, color);
-      if (rpm == getRPMBin(currentRPM) && load == getLoadBin(currentMAP) && currentRPM > 500) {
-        tft.drawRect(x, y, cellWidth - 1, cellHeight - 1, WHITE);
-      }
-    }
-  }
-}
-
-void displayHeatMapLambda(WidgetElement widget) {
-  int cellWidth = widget.params[3] / RPM_BINS;
-  int cellHeight = widget.params[4] / LOAD_BINS;
-  for (int rpm = 0; rpm < RPM_BINS; rpm++) {
-    for (int load = 0; load < LOAD_BINS; load++) {
-      int x = widget.x + rpm * cellWidth;
-      int y = widget.y + (LOAD_BINS - 1 - load) * cellHeight;
-      uint16_t color = (sampleCount[rpm][load] > 0) ? getLambdaColor(lambdaMap[rpm][load]) : DARKGREY;
+      uint16_t color = (sampleCount[rpm][load] > 0) ? (isTemp ? getTempColor(dataMap[rpm][load], widget.value_min, widget.value_max) : getLambdaColor(dataMap[rpm][load])) : DARKGREY;
       tft.fillRect(x, y, cellWidth - 1, cellHeight - 1, color);
       if (rpm == getRPMBin(currentRPM) && load == getLoadBin(currentMAP) && currentRPM > 500) {
         tft.drawRect(x, y, cellWidth - 1, cellHeight - 1, WHITE);
@@ -306,11 +283,11 @@ void updateDisplay() {
           break;
         case MODE_HEATMAP_TEMP:
           clearArea(widget);
-          displayHeatMapTemp(widget);
+          displayHeatMap(widget, tempMap, true);
           break;
         case MODE_HEATMAP_LAMBDA:
           clearArea(widget);
-          displayHeatMapLambda(widget);
+          displayHeatMap(widget, lambdaMap, false);
           break;
       }
     }
