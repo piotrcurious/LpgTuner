@@ -45,6 +45,10 @@ float currentRPM = 0;
 #define RPM_CALC_INTERVAL 100 // Calculate RPM every 100ms
 #define PULSES_PER_REV 2 // Adjust based on your sensor
 
+// Sensor reading globals
+float currentTemp = 0;
+float currentLambda = 0;
+
 // MAP sensor variables
 float currentMAP = 0; // In kPa
 #define MAP_MIN_VOLTAGE 0.5
@@ -346,19 +350,19 @@ void updateHeatMaps() {
     int rpmBin = getRPMBin(currentRPM);
     int loadBin = getLoadBin(currentMAP);
     
-    float temp = currentValue[0][0]; // Temperature from widget 0
-    float lambda = currentValue[0][1]; // Lambda from widget 1
-    
-    // Running average
-    if (sampleCount[rpmBin][loadBin] == 0) {
-      tempMap[rpmBin][loadBin] = temp;
-      lambdaMap[rpmBin][loadBin] = lambda;
-      sampleCount[rpmBin][loadBin] = 1;
-    } else {
-      float alpha = 0.1; // Smoothing factor
-      tempMap[rpmBin][loadBin] = tempMap[rpmBin][loadBin] * (1 - alpha) + temp * alpha;
-      lambdaMap[rpmBin][loadBin] = lambdaMap[rpmBin][loadBin] * (1 - alpha) + lambda * alpha;
-      sampleCount[rpmBin][loadBin]++;
+    // Validate readings before updating map
+    if (currentTemp > 0 && currentTemp < 1000 && currentLambda > 0 && currentLambda < 5.0) {
+      // Running average
+      if (sampleCount[rpmBin][loadBin] == 0) {
+        tempMap[rpmBin][loadBin] = currentTemp;
+        lambdaMap[rpmBin][loadBin] = currentLambda;
+        sampleCount[rpmBin][loadBin] = 1;
+      } else {
+        float alpha = 0.1; // Smoothing factor
+        tempMap[rpmBin][loadBin] = tempMap[rpmBin][loadBin] * (1 - alpha) + currentTemp * alpha;
+        lambdaMap[rpmBin][loadBin] = lambdaMap[rpmBin][loadBin] * (1 - alpha) + currentLambda * alpha;
+        sampleCount[rpmBin][loadBin]++;
+      }
     }
   }
 }
@@ -632,22 +636,10 @@ void updateDisplay() {
 float readWidget(uint16_t source) {
   switch (source) {
     case 1: // MAX6675 thermocouple
-      {
-        if (millis() - last_conversion_time >= MAX6675_CONVERSION_RATE) { 
-          int status = thermoCouple.read();
-          last_conversion_time = millis();
-        }
-        return thermoCouple.getTemperature();
-      }
+      return currentTemp;
       
     case 2: // Lambda sensor (analog)
-      {
-        float voltage = analogRead(analogInPin) * (MAX_ANALOG_VOLTAGE_A0 / ADC_RESOLUTION_A0);
-        // Convert voltage to lambda (adjust based on your sensor)
-        // This is a placeholder - calibrate for your sensor
-        float lambda = voltage / 3.3; // Simple linear mapping
-        return lambda;
-      }
+      return currentLambda;
       
     case 3: // RPM
       return currentRPM;
@@ -658,6 +650,27 @@ float readWidget(uint16_t source) {
     default:
       return random(0, 1024);
   }
+}
+
+void readSensors() {
+  // Read Temperature
+  if (millis() - last_conversion_time >= MAX6675_CONVERSION_RATE) {
+    thermoCouple.read();
+    currentTemp = thermoCouple.getTemperature();
+    last_conversion_time = millis();
+  }
+
+  // Read Lambda
+  float lambdaVoltage = analogRead(analogInPin) * (MAX_ANALOG_VOLTAGE_A0 / ADC_RESOLUTION_A0);
+  // Convert voltage to lambda (adjust based on your sensor)
+  // This is a placeholder - calibrate for your sensor
+  currentLambda = lambdaVoltage / 3.3; // Simple linear mapping
+
+  // Read MAP
+  readMAP();
+
+  // Calculate RPM
+  calculateRPM();
 }
 
 void calculateRPM() {
@@ -846,9 +859,8 @@ void switch_layout() {
 }
 
 void loop() {
-  // Read sensors
-  calculateRPM();
-  readMAP();
+  // Read all sensors
+  readSensors();
   
   // Update heat maps
   updateHeatMaps();
@@ -867,9 +879,9 @@ void loop() {
     Serial.print(" | MAP: ");
     Serial.print(currentMAP, 1);
     Serial.print(" kPa | Temp: ");
-    Serial.print(currentValue[0][0], 1);
+    Serial.print(currentTemp, 1);
     Serial.print(" | Lambda: ");
-    Serial.println(currentValue[0][1], 3);
+    Serial.println(currentLambda, 3);
     lastDebug = millis();
   }
 }
