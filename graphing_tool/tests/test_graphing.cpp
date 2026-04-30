@@ -10,6 +10,7 @@ void triggerInterrupt(int interrupt);
 void advance_micros(unsigned long us);
 
 void test_persistence();
+void test_non_blocking_button();
 void saveLifetimeData();
 void loadLifetimeData();
 void resetLifetimeData();
@@ -262,7 +263,6 @@ int main() {
     test_pulse_width_measurement();
     test_sensor_mapping();
     test_mode_switching();
-void test_non_blocking_button();
     test_heatmap_update();
     test_color_functions();
     test_density_map();

@@ -26,6 +26,8 @@
 
 // Initialize display
 LGFX tft;
+LGFX_Sprite pwSprite(&tft);
+LGFX_Sprite sensorSprite(&tft);
 
 // Define pins for sensors and injector
 const int throttlePin = 34;      // Throttle position sensor (ADC1)
@@ -104,6 +106,8 @@ const int CHART_Y_OFFSET = 35;
 // Update intervals
 unsigned long lastDisplayUpdate = 0;
 const unsigned long DISPLAY_UPDATE_INTERVAL = 100;
+unsigned long modeNameShowTime = 0;
+const char* currentModeName = "";
 
 // Color definitions
 #define COLOR_BACKGROUND 0x0000 // Black
@@ -135,6 +139,7 @@ void drawDensityMap();
 void drawCurrentPulseWidth();
 void drawSensorReadings();
 void drawModeIndicator();
+void drawColorLegend();
 void switchVisualizationMode();
 void clearHeatMap();
 uint16_t getColorForPulseWidth(float pw);
@@ -168,6 +173,11 @@ void setup() {
   // Initialize display
   tft.init();
   tft.setRotation(1); // Landscape mode
+
+  // Initialize Sprites
+  pwSprite.createSprite(80, 25);
+  sensorSprite.createSprite(DISPLAY_WIDTH, 20);
+
   tft.startWrite();
   drawGui();
   tft.endWrite();
@@ -198,6 +208,18 @@ void loop() {
     drawCurrentPulseWidth();
     drawSensorReadings();
     drawModeIndicator();
+
+    // Draw mode name overlay if active
+    if (millis() < modeNameShowTime) {
+      tft.fillRect(80, 100, 160, 40, 0x000F); // Navy
+      tft.drawRect(80, 100, 160, 40, 0xFFFF); // White
+      tft.setTextSize(2);
+      tft.setTextColor(0xFFE0, 0x000F); // Yellow, Navy
+      int textWidth = strlen(currentModeName) * 12;
+      tft.setCursor(160 - textWidth/2, 115);
+      tft.println(currentModeName);
+    }
+
     tft.endWrite();
   }
 
@@ -259,6 +281,8 @@ void drawGui() {
   tft.drawString("0", CHART_X_OFFSET - 15, CHART_Y_OFFSET + CHART_HEIGHT - 5);
   tft.drawString("6k", CHART_X_OFFSET + CHART_WIDTH - 10, CHART_Y_OFFSET + CHART_HEIGHT + 5);
   tft.drawString("100", CHART_X_OFFSET - 20, CHART_Y_OFFSET - 5);
+
+  drawColorLegend();
 }
 
 #ifdef ESP32
@@ -424,37 +448,16 @@ void handleButton() {
 void switchVisualizationMode() {
   currentMode = (VisualizationMode)((currentMode + 1) % MODE_COUNT);
   
-  tft.startWrite();
-  // Clear screen and redraw GUI for new mode
-  drawGui();
-  
-  // If switching to heat map, clear old data
-  if (currentMode == MODE_HEAT_MAP || currentMode == MODE_3D_SURFACE || currentMode == MODE_DENSITY_MAP) {
-    clearHeatMap();
-  }
-  
-  // Show mode name briefly
-  tft.fillRect(80, 100, 160, 40, 0x000F); // Navy
-  tft.drawRect(80, 100, 160, 40, 0xFFFF); // White
-  tft.setTextSize(2);
-  tft.setTextColor(0xFFE0, 0x000F); // Yellow, Navy
-  
-  const char* modeName = "";
   switch(currentMode) {
-    case MODE_SCATTER_MAP: modeName = "Scatter Map"; break;
-    case MODE_HEAT_MAP: modeName = "Heat Map"; break;
-    case MODE_3D_SURFACE: modeName = "3D Surface"; break;
-    case MODE_AFR_MAP: modeName = "AFR Map"; break;
-    case MODE_DENSITY_MAP: modeName = "Density Map"; break;
-    default: modeName = "Unknown"; break;
+    case MODE_SCATTER_MAP: currentModeName = "Scatter Map"; break;
+    case MODE_HEAT_MAP: currentModeName = "Heat Map"; break;
+    case MODE_3D_SURFACE: currentModeName = "3D Surface"; break;
+    case MODE_AFR_MAP: currentModeName = "AFR Map"; break;
+    case MODE_DENSITY_MAP: currentModeName = "Density Map"; break;
+    default: currentModeName = "Unknown"; break;
   }
-  
-  int textWidth = strlen(modeName) * 12;
-  tft.setCursor(160 - textWidth/2, 115);
-  tft.println(modeName);
-  tft.endWrite();
-  
-  delay(1000);
+
+  modeNameShowTime = millis() + 1500; // Show for 1.5 seconds
 
   tft.startWrite();
   drawGui();
@@ -463,9 +466,12 @@ void switchVisualizationMode() {
 
 void updateStatisticalMaps() {
   // Calculate cell indices
-  int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1);
+  int col = (int)(rpm / 500);
   float load = (mapPressure * throttlePos) / 100.0;
-  int row = constrain((int)(load / 11.11), 0, HEATMAP_ROWS - 1);
+  int row = (int)(load / 11.11);
+
+  // Bounds checking
+  if (col < 0 || col >= HEATMAP_COLS || row < 0 || row >= HEATMAP_ROWS) return;
 
   HeatMapCell* cell = &heatMap[col][row];
 
@@ -503,6 +509,50 @@ void updateVisualization() {
       break;
     default:
       break;
+  }
+}
+
+void drawColorLegend() {
+  const int LEGEND_X = CHART_X_OFFSET + CHART_WIDTH + 5;
+  const int LEGEND_Y = CHART_Y_OFFSET;
+  const int LEGEND_W = 10;
+  const int LEGEND_H = CHART_HEIGHT;
+
+  if (currentOverlay == OVERLAY_DIFF) {
+    // Diff mode legend (-2ms to +2ms)
+    for (int i = 0; i < LEGEND_H; i++) {
+      float diff = 2.0f - (4.0f * i / LEGEND_H);
+      uint16_t color = getColorForDiff(diff);
+      tft.drawFastHLine(LEGEND_X, LEGEND_Y + i, LEGEND_W, color);
+    }
+    tft.setTextColor(COLOR_TEXT);
+    tft.setTextSize(1);
+    tft.drawString("+2", LEGEND_X + LEGEND_W + 2, LEGEND_Y);
+    tft.drawString(" 0", LEGEND_X + LEGEND_W + 2, LEGEND_Y + LEGEND_H / 2 - 4);
+    tft.drawString("-2", LEGEND_X + LEGEND_W + 2, LEGEND_Y + LEGEND_H - 8);
+  } else if (currentMode == MODE_AFR_MAP) {
+    // AFR/Lambda legend (0.9 to 1.2)
+    for (int i = 0; i < LEGEND_H; i++) {
+      float lambda = 0.85f + (0.4f * i / LEGEND_H); // Backwards to match bottom-up
+      uint16_t color = getColorForAFR(lambda);
+      tft.drawFastHLine(LEGEND_X, LEGEND_Y + (LEGEND_H - 1 - i), LEGEND_W, color);
+    }
+    tft.setTextColor(COLOR_TEXT);
+    tft.setTextSize(1);
+    tft.drawString("1.25", LEGEND_X + LEGEND_W + 2, LEGEND_Y);
+    tft.drawString("1.00", LEGEND_X + LEGEND_W + 2, LEGEND_Y + LEGEND_H / 2 - 4);
+    tft.drawString("0.85", LEGEND_X + LEGEND_W + 2, LEGEND_Y + LEGEND_H - 8);
+  } else {
+    // Standard PW legend (0ms to 15ms)
+    for (int i = 0; i < LEGEND_H; i++) {
+      float pw = 15.0f * (LEGEND_H - 1 - i) / LEGEND_H;
+      uint16_t color = getColorForPulseWidth(pw);
+      tft.drawFastHLine(LEGEND_X, LEGEND_Y + i, LEGEND_W, color);
+    }
+    tft.setTextColor(COLOR_TEXT);
+    tft.setTextSize(1);
+    tft.drawString("15ms", LEGEND_X + LEGEND_W + 2, LEGEND_Y);
+    tft.drawString("0ms", LEGEND_X + LEGEND_W + 2, LEGEND_Y + LEGEND_H - 8);
   }
 }
 
@@ -622,37 +672,54 @@ void resetLifetimeData() {
 }
 
 void draw3DSurface() {
-  // To avoid artifacts, we should clear the chart area before redrawing 3D surface
-  // However, full clear might flicker. For now, we overwrite.
-
+  // Optimized pseudo-3D rendering with back-to-front drawing to handle occlusions
   int cellWidth = CHART_WIDTH / HEATMAP_COLS;
   int cellHeight = CHART_HEIGHT / HEATMAP_ROWS;
   
-  for (int c = 0; c < HEATMAP_COLS; c++) {
-    for (int r = 0; r < HEATMAP_ROWS; r++) {
+  // We draw from top-right to bottom-left to minimize artifacts
+  for (int r = HEATMAP_ROWS - 1; r >= 0; r--) {
+    for (int c = HEATMAP_COLS - 1; c >= 0; c--) {
       if (heatMap[c][r].count > 0) {
-        float avgPW = heatMap[c][r].avgPulseWidth;
+        float valToShow = 0;
+        uint16_t color = 0;
         
+        // Use active overlay for 3D height/color
+        switch(currentOverlay) {
+          case OVERLAY_NORMAL:
+            valToShow = heatMap[c][r].avgPulseWidth;
+            color = getColorForPulseWidth(valToShow);
+            break;
+          case OVERLAY_LIFETIME:
+            valToShow = heatMap[c][r].sumPulseWidth / heatMap[c][r].count;
+            color = getColorForPulseWidth(valToShow);
+            break;
+          case OVERLAY_DIFF:
+            {
+              float lifetimeAvg = heatMap[c][r].sumPulseWidth / heatMap[c][r].count;
+              valToShow = heatMap[c][r].avgPulseWidth - lifetimeAvg;
+              color = getColorForDiff(valToShow);
+              // Shift range for display height (center around middle)
+              valToShow += 5.0;
+            }
+            break;
+          default: break;
+        }
+
         // Calculate 3D effect
         int baseX = CHART_X_OFFSET + c * cellWidth;
         int baseY = CHART_Y_OFFSET + (HEATMAP_ROWS - 1 - r) * cellHeight;
         
-        // Height based on pulse width (up to 20ms)
-        int height = map(constrain(avgPW, 0, 20) * 100, 0, 2000, 0, 25);
+        // Height based on value
+        int height = map(constrain(valToShow, 0, 20) * 100, 0, 2000, 0, 25);
         
-        uint16_t color = getColorForPulseWidth(avgPW);
+        // Draw side face (shading)
+        uint16_t sideColor = (color >> 1) & 0x7BEF;
+        if (height > 0) {
+           tft.fillRect(baseX + 1, baseY - height + 1, cellWidth - 2, height + cellHeight - 2, sideColor);
+        }
         
-        // Clear previous height if needed (simplified: redraw base and then offset top)
-        // tft.fillRect(baseX + 1, baseY + 1, cellWidth - 2, cellHeight - 2, COLOR_BACKGROUND);
-
         // Draw top face
         tft.fillRect(baseX + 1, baseY - height + 1, cellWidth - 2, cellHeight - 2, color);
-        
-        // Draw side face (darker)
-        uint16_t sideColor = (color >> 1) & 0x7BEF;
-        if (height > 2) {
-          tft.fillRect(baseX + cellWidth - 2, baseY - height + cellHeight/2, 2, height, sideColor);
-        }
       }
     }
   }
@@ -711,27 +778,26 @@ void drawDensityMap() {
 }
 
 void drawCurrentPulseWidth() {
-  tft.fillRect(DISPLAY_WIDTH - 80, 5, 75, 25, COLOR_BACKGROUND);
-  
-  tft.setTextSize(2);
-  tft.setTextColor(TFT_YELLOW, COLOR_BACKGROUND);
-  tft.setCursor(DISPLAY_WIDTH - 78, 5);
-  tft.printf("%.2f", pulseWidthSmooth);
-  tft.setTextSize(1);
-  tft.println("ms");
+  pwSprite.fillScreen(COLOR_BACKGROUND);
+  pwSprite.setTextSize(2);
+  pwSprite.setTextColor(0xFFE0, COLOR_BACKGROUND); // Yellow
+  pwSprite.setCursor(0, 0);
+  pwSprite.printf("%.2f", pulseWidthSmooth);
+  pwSprite.setTextSize(1);
+  pwSprite.println("ms");
+  pwSprite.pushSprite(DISPLAY_WIDTH - 80, 5);
 }
 
 void drawSensorReadings() {
-  int yPos = DISPLAY_HEIGHT - 20;
-  tft.setTextSize(1);
-  tft.setTextColor(TFT_GREEN, COLOR_BACKGROUND);
-  
-  tft.fillRect(0, yPos, DISPLAY_WIDTH, 20, COLOR_BACKGROUND);
+  sensorSprite.fillScreen(COLOR_BACKGROUND);
+  sensorSprite.setTextSize(1);
+  sensorSprite.setTextColor(0x07E0, COLOR_BACKGROUND); // Green
   
   char buffer[80];
   sprintf(buffer, "RPM:%4.0f TPS:%3.0f%% MAP:%3.0f Lambda:%.2f", 
           rpm, throttlePos, mapPressure, lambdaValue);
-  tft.drawString(buffer, 5, yPos + 2);
+  sensorSprite.drawString(buffer, 5, 2);
+  sensorSprite.pushSprite(0, DISPLAY_HEIGHT - 20);
 }
 
 void drawModeIndicator() {
