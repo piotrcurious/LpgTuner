@@ -75,6 +75,15 @@ void portEXIT_CRITICAL(portMUX_TYPE* mux);
 void portENTER_CRITICAL_ISR(portMUX_TYPE* mux);
 void portEXIT_CRITICAL_ISR(portMUX_TYPE* mux);
 
+class Preferences {
+public:
+    bool begin(const char* name, bool readOnly = false) { return true; }
+    void end() {}
+    size_t putBytes(const char* key, const void* value, size_t len);
+    size_t getBytes(const char* key, void* buf, size_t len);
+    bool clear();
+};
+
 long map(long x, long in_min, long in_max, long out_min, long out_max);
 
 template<class T, class L, class H>

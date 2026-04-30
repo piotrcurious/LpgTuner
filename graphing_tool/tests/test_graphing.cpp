@@ -9,6 +9,11 @@ void setDigitalRead(int pin, int value);
 void triggerInterrupt(int interrupt);
 void advance_micros(unsigned long us);
 
+void test_persistence();
+void saveLifetimeData();
+void loadLifetimeData();
+void resetLifetimeData();
+
 // Include the .ino file - we need to trick it a bit
 #define setup arduino_setup
 #define loop arduino_loop
@@ -261,7 +266,44 @@ int main() {
     test_color_functions();
     test_density_map();
     test_lifetime_and_diff();
+    test_persistence();
 
     std::cout << "All tests passed!" << std::endl;
     return 0;
+}
+
+void test_persistence() {
+    std::cout << "Testing Persistence..." << std::endl;
+
+    clearHeatMap();
+    rpm = 2000;
+    throttlePos = 100;
+    mapPressure = 44.45; // Row 4
+    pulseWidth = 12.0;
+
+    drawHeatMap();
+    int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1);
+    int row = constrain((int)((mapPressure * throttlePos / 100.0) / 11.11), 0, HEATMAP_ROWS - 1);
+
+    assert(heatMap[col][row].count == 1);
+    float originalEMA = heatMap[col][row].avgPulseWidth;
+
+    // Save
+    saveLifetimeData();
+
+    // Clear in-memory data
+    clearHeatMap();
+    assert(heatMap[col][row].count == 0);
+
+    // Load
+    loadLifetimeData();
+    assert(heatMap[col][row].count == 1);
+    assert(heatMap[col][row].avgPulseWidth == originalEMA);
+
+    // Reset
+    resetLifetimeData();
+    loadLifetimeData();
+    assert(heatMap[col][row].count == 0);
+
+    std::cout << "Persistence test passed!" << std::endl;
 }
