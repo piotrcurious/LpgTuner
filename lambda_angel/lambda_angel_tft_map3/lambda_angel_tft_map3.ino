@@ -30,7 +30,7 @@ struct Widget {
 
 Widget layouts[][6] = {
   {
-    {1, "Temp:", 10, 10, 2, 500, MODE_DEC, 0, 1023, {0xFFFF, 120, 20}},
+    {1, "Temp:", 10, 10, 2, 500, MODE_DEC, 0, 1000, {0xFFFF, 120, 20}},
     {2, "Lam:", 170, 10, 2, 100, MODE_DEC, 0, 3.3, {0x07FF, 120, 20}},
     {3, "RPM:", 10, 40, 2, 100, MODE_DEC, 0, 10000, {0x07E0, 120, 20}},
     {4, "MAP:", 170, 40, 2, 100, MODE_DEC, 0, 250, {0xFFE0, 120, 20}},
@@ -39,9 +39,19 @@ Widget layouts[][6] = {
   },
   {
     {1, "", 10, 30, 1, 1000, MODE_HEATMAP_TEMP, 0, 850, {0xFFFF, 280, 160}},
-    {0, "Temp Map", 80, 5, 2, 10000, MODE_DEC, 0, 0, {0xFFE0}},
+    {0, "Temp Map (C)", 80, 5, 2, 10000, MODE_DEC, 0, 0, {0xFFE0}},
+    {1, "T:", 10, 215, 1, 500, MODE_DEC, 0, 1000, {0xFD20}},
+    {3, "RPM:", 90, 215, 1, 100, MODE_DEC, 0, 10000, {0x07E0}},
+    {4, "MAP:", 190, 215, 1, 100, MODE_DEC, 0, 250, {0xFFE0}},
+    {0,"",0,0,0,0,0,0,0,{0}}
+  },
+  {
     {2, "", 10, 30, 1, 1000, MODE_HEATMAP_LAMBDA, 0.5, 1.5, {0xFFFF, 280, 160}},
-    {0,"",0,0,0,0,0,0,0,{0}},{0,"",0,0,0,0,0,0,0,{0}},{0,"",0,0,0,0,0,0,0,{0}}
+    {0, "Lambda Map", 80, 5, 2, 10000, MODE_DEC, 0, 0, {0x07FF}},
+    {2, "L:", 10, 215, 1, 100, MODE_DEC, 0, 2, {0x07FF}},
+    {3, "RPM:", 90, 215, 1, 100, MODE_DEC, 0, 10000, {0x07E0}},
+    {4, "MAP:", 190, 215, 1, 100, MODE_DEC, 0, 250, {0xFFE0}},
+    {0,"",0,0,0,0,0,0,0,{0}}
   }
 };
 
@@ -62,18 +72,19 @@ void readSensors() {
 }
 
 void updateHeatMaps() {
-  if (currentRPM > 500) {
+  if (currentRPM > 500 && currentTemp > 0 && currentLambda > 0) {
     int r = getRPMBin(currentRPM), l = getLoadBin(currentMAP);
-    if (currentTemp > 0 && currentLambda > 0) {
-      int prev = sampleCount[r][l];
-      updateMapSample(tempMap[r][l], currentTemp, sampleCount[r][l]);
-      int dummy = prev;
-      updateMapSample(lambdaMap[r][l], currentLambda, dummy);
+    if (sampleCount[r][l] == 0) {
+      tempMap[r][l] = currentTemp; lambdaMap[r][l] = currentLambda; sampleCount[r][l] = 1;
+    } else {
+      tempMap[r][l] = lowPass(tempMap[r][l], currentTemp, 0.1f);
+      lambdaMap[r][l] = lowPass(lambdaMap[r][l], currentLambda, 0.1f);
+      if (sampleCount[r][l] < 10000) sampleCount[r][l]++;
     }
   }
 }
 
-void drawWidget(Widget& w) {
+void drawWidget(Widget& w, int idx) {
   float val = (w.source == 1) ? currentTemp : (w.source == 2) ? currentLambda : (w.source == 3) ? currentRPM : currentMAP;
   if (w.mode == MODE_DEC) {
     tft.fillRect(w.x + 60, w.y, 80, 20, BLACK);
@@ -93,6 +104,8 @@ void drawWidget(Widget& w) {
     for(int r=0; r<RPM_BINS; r++) for(int l=0; l<LOAD_BINS; l++) {
       uint16_t c = sampleCount[r][l]>0 ? (isTemp ? getTempColor(tempMap[r][l], w.minV, w.maxV) : getLambdaColor(lambdaMap[r][l])) : 0x7BEF;
       tft.fillRect(w.x + r*cw, w.y + (LOAD_BINS-1-l)*ch, cw-1, ch-1, c);
+      if (r == getRPMBin(currentRPM) && l == getLoadBin(currentMAP) && currentRPM > 500)
+          tft.drawRect(w.x + r*cw, w.y + (LOAD_BINS-1-l)*ch, cw-1, ch-1, WHITE);
     }
   }
 }
@@ -106,12 +119,13 @@ void setup() {
 void loop() {
   readSensors(); updateHeatMaps();
   static unsigned long lastLC = 0; static int curL = 0;
-  if (millis() - lastLC >= 10000) { lastLC = millis(); curL = (curL + 1) % 2; tft.fillScreen(BLACK); }
-  static unsigned long lastUpd[2][6];
+  if (millis() - lastLC >= 8000) { lastLC = millis(); curL = (curL + 1) % 3; tft.fillScreen(BLACK); }
+  static unsigned long lastUpd[3][6];
   for (int i = 0; i < 6; i++) {
-    if (layouts[curL][i].label != "" || layouts[curL][i].mode != 0) {
-      if (millis() - lastUpd[curL][i] >= layouts[curL][i].rate) {
-        lastUpd[curL][i] = millis(); drawWidget(layouts[curL][i]);
+    Widget& w = layouts[curL][i];
+    if (w.label != "" || w.mode != 0) {
+      if (millis() - lastUpd[curL][i] >= w.rate) {
+        lastUpd[curL][i] = millis(); drawWidget(w, i);
       }
     }
   }
