@@ -6,7 +6,7 @@ The core principle is to calculate the Air-Fuel Ratio (AFR) based on configurabl
 
 ---
 
-## 1. `simulator_simple.ino` - Narrowband Simulator
+## 1. `simulator_narrowband.ino` - Narrowband Simulator
 
 This sketch focuses on simulating a single **narrowband** O2 sensor.
 
