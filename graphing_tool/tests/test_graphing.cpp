@@ -31,14 +31,14 @@ void test_rpm_calculation() {
     assert(lastCamTime == 1000000);
     assert(newCamData == false); // first pulse doesn't give period
 
-    // Simulate second pulse 20ms later (3000 RPM)
+    // Simulate second pulse 20ms later (3000 RPM if PPR=1)
     advance_micros(20000); // 20ms = 20000us
     camISR();
     assert(newCamData == true);
     assert(camPeriod == 20000);
 
     readSensors();
-    assert(rpm == 3000.0);
+    assert(rpm == (3000.0 / PULSES_PER_REV));
 
     std::cout << "RPM calculation test passed!" << std::endl;
 }
@@ -117,6 +117,86 @@ void test_mode_switching() {
     std::cout << "Mode switching test passed!" << std::endl;
 }
 
+void test_heatmap_update() {
+    std::cout << "Testing Heat Map update..." << std::endl;
+
+    clearHeatMap();
+    rpm = 1000; // Col 2 (1000/500)
+    throttlePos = 100;
+    mapPressure = 44.45; // Row 4 (44.45 / 11.11 = 4.0009)
+    pulseWidth = 5.0;
+    lambdaValue = 1.0;
+
+    drawHeatMap();
+
+    int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1);
+    float load = (mapPressure * throttlePos) / 100.0;
+    int row = constrain((int)(load / 11.11), 0, HEATMAP_ROWS - 1);
+    std::cout << "RPM: " << rpm << " -> Col: " << col << std::endl;
+    std::cout << "Load: " << load << " -> Row: " << row << std::endl;
+
+    assert(heatMap[col][row].count == 1);
+    assert(heatMap[col][row].avgPulseWidth == 5.0f);
+
+    // Add another point in same cell
+    pulseWidth = 7.0;
+    drawHeatMap();
+    assert(heatMap[col][row].count == 2);
+    // EMA: 5.0 * 0.9 + 7.0 * 0.1 = 4.5 + 0.7 = 5.2
+    assert(std::abs(heatMap[col][row].avgPulseWidth - 5.2f) < 0.001f);
+
+    std::cout << "Heat Map update test passed!" << std::endl;
+}
+
+void test_color_functions() {
+    std::cout << "Testing color functions..." << std::endl;
+
+    // 0ms should be Blue
+    uint16_t c0 = getColorForPulseWidth(0);
+    // Blue in RGB565: R=0, G=0, B=31 -> 0x001F
+    assert(c0 == 0x001F);
+
+    // 15ms should be Red (new full scale)
+    uint16_t c15 = getColorForPulseWidth(15);
+    // Red in RGB565: R=31, G=0, B=0 -> 0xF800
+    assert(c15 == 0xF800);
+
+    // Lambda tests
+    uint16_t cStoich = getColorForAFR(1.0);
+    assert(cStoich == TFT_GREEN);
+
+    uint16_t cRich = getColorForAFR(0.8);
+    assert(cRich == TFT_RED);
+
+    uint16_t cLean = getColorForAFR(1.3);
+    assert(cLean == TFT_BLUE);
+
+    std::cout << "Color functions test passed!" << std::endl;
+}
+
+void test_density_map() {
+    std::cout << "Testing Density Map..." << std::endl;
+
+    clearHeatMap();
+    rpm = 500; // Col 1
+    throttlePos = 100;
+    mapPressure = 11.12; // Row 1
+
+    drawDensityMap();
+    int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1);
+    float load = (mapPressure * throttlePos) / 100.0;
+    int row = constrain((int)(load / 11.11), 0, HEATMAP_ROWS - 1);
+    std::cout << "RPM: " << rpm << " -> Col: " << col << std::endl;
+    std::cout << "Load: " << load << " -> Row: " << row << std::endl;
+
+    assert(heatMap[col][row].count == 1);
+
+    drawDensityMap();
+    assert(heatMap[1][1].count == 2);
+
+    std::cout << "Density Map test passed!" << std::endl;
+}
+
 int main() {
     arduino_setup();
 
@@ -124,6 +204,9 @@ int main() {
     test_pulse_width_measurement();
     test_sensor_mapping();
     test_mode_switching();
+    test_heatmap_update();
+    test_color_functions();
+    test_density_map();
 
     std::cout << "All tests passed!" << std::endl;
     return 0;

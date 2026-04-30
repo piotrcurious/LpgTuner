@@ -22,6 +22,7 @@ const int throttlePin = 34;      // Throttle position sensor (ADC1)
 const int mapPin = 35;           // MAP sensor (ADC1)
 const int lambdaPin = 32;        // Lambda probe (ADC1)
 const int camPin = 26;           // Cam sensor (interrupt capable)
+const int PULSES_PER_REV = 1;    // Pulses per revolution for RPM calculation
 const int injectorPin = 27;      // Injector input (interrupt capable)
 const int injectorGaugePin = 25; // PWM output for gauge (PWM capable)
 const int buttonPin = 0;         // Boot button for mode switching
@@ -44,6 +45,7 @@ const int HEATMAP_ROWS = 9;   // Load divisions
 struct HeatMapCell {
   float sumPulseWidth;
   float sumLambda;
+  float avgPulseWidth;   // For exponential moving average
   int count;
   unsigned long lastUpdate;
 };
@@ -261,8 +263,8 @@ void readSensors() {
 #endif
 
   if (dataAvailable) {
-    if (period > 0 && period < 1000000) {
-      rpm = 60000000.0 / period;
+    if (period > 0 && period < 2000000) {
+      rpm = (60000000.0 / period) / PULSES_PER_REV;
       rpm = constrain(rpm, 0, 8000);
     } else {
       rpm = 0;
@@ -272,6 +274,7 @@ void readSensors() {
   // Timeout detection
   if (micros() - lastCamTime > 2000000) {
     rpm = 0;
+    camPeriod = 0; // Reset period as well
   }
 }
 
@@ -394,8 +397,14 @@ void drawHeatMap() {
   float load = (mapPressure * throttlePos) / 100.0;
   int row = constrain((int)(load / 11.11), 0, HEATMAP_ROWS - 1); // ~11.11% load per cell
   
-  // Update cell data
+  // Update cell data with Exponential Moving Average (EMA)
   HeatMapCell* cell = &heatMap[col][row];
+  if (cell->count == 0) {
+    cell->avgPulseWidth = pulseWidth;
+  } else {
+    // alpha = 0.1 for slow moving average, reactive but stable
+    cell->avgPulseWidth = (cell->avgPulseWidth * 0.9f) + (pulseWidth * 0.1f);
+  }
   cell->sumPulseWidth += pulseWidth;
   cell->sumLambda += lambdaValue;
   cell->count++;
@@ -408,12 +417,15 @@ void drawHeatMap() {
   for (int c = 0; c < HEATMAP_COLS; c++) {
     for (int r = 0; r < HEATMAP_ROWS; r++) {
       if (heatMap[c][r].count > 0) {
-        float avgPW = heatMap[c][r].sumPulseWidth / heatMap[c][r].count;
+        float avgPW = heatMap[c][r].avgPulseWidth;
         uint16_t color = getColorForPulseWidth(avgPW);
         
-        // Fade old cells
-        if (millis() - heatMap[c][r].lastUpdate > 5000) {
-          color = (color >> 1) & 0x7BEF; // Darken by 50%
+        // Fade old cells (not updated in last 10 seconds)
+        unsigned long timeSinceUpdate = millis() - heatMap[c][r].lastUpdate;
+        if (timeSinceUpdate > 10000) {
+           // More gradual fade
+           if (timeSinceUpdate > 30000) color = COLOR_BACKGROUND;
+           else color = (color >> 1) & 0x7BEF; // Darken by 50%
         }
         
         int x = CHART_X_OFFSET + c * cellWidth;
@@ -428,34 +440,43 @@ void drawHeatMap() {
 void draw3DSurface() {
   if (rpm < 100) return;
   
-  // Update heat map data
+  // Update heat map data with EMA
   int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1);
   float load = (mapPressure * throttlePos) / 100.0;
   int row = constrain((int)(load / 11.11), 0, HEATMAP_ROWS - 1);
   
   HeatMapCell* cell = &heatMap[col][row];
-  cell->sumPulseWidth += pulseWidth;
+  if (cell->count == 0) {
+    cell->avgPulseWidth = pulseWidth;
+  } else {
+    cell->avgPulseWidth = (cell->avgPulseWidth * 0.9f) + (pulseWidth * 0.1f);
+  }
   cell->count++;
   cell->lastUpdate = millis();
   
-  // Draw pseudo-3D surface with perspective
+  // To avoid artifacts, we should clear the chart area before redrawing 3D surface
+  // However, full clear might flicker. For now, we overwrite.
+
   int cellWidth = CHART_WIDTH / HEATMAP_COLS;
   int cellHeight = CHART_HEIGHT / HEATMAP_ROWS;
   
   for (int c = 0; c < HEATMAP_COLS; c++) {
     for (int r = 0; r < HEATMAP_ROWS; r++) {
       if (heatMap[c][r].count > 0) {
-        float avgPW = heatMap[c][r].sumPulseWidth / heatMap[c][r].count;
+        float avgPW = heatMap[c][r].avgPulseWidth;
         
         // Calculate 3D effect
         int baseX = CHART_X_OFFSET + c * cellWidth;
         int baseY = CHART_Y_OFFSET + (HEATMAP_ROWS - 1 - r) * cellHeight;
         
-        // Height based on pulse width
-        int height = map(avgPW * 100, 0, 1000, 0, 15);
+        // Height based on pulse width (up to 20ms)
+        int height = map(constrain(avgPW, 0, 20) * 100, 0, 2000, 0, 25);
         
         uint16_t color = getColorForPulseWidth(avgPW);
         
+        // Clear previous height if needed (simplified: redraw base and then offset top)
+        // tft.fillRect(baseX + 1, baseY + 1, cellWidth - 2, cellHeight - 2, COLOR_BACKGROUND);
+
         // Draw top face
         tft.fillRect(baseX + 1, baseY - height + 1, cellWidth - 2, cellHeight - 2, color);
         
@@ -576,6 +597,7 @@ void clearHeatMap() {
     for (int r = 0; r < HEATMAP_ROWS; r++) {
       heatMap[c][r].sumPulseWidth = 0;
       heatMap[c][r].sumLambda = 0;
+      heatMap[c][r].avgPulseWidth = 0;
       heatMap[c][r].count = 0;
       heatMap[c][r].lastUpdate = 0;
     }
@@ -583,8 +605,9 @@ void clearHeatMap() {
 }
 
 uint16_t getColorForPulseWidth(float pw) {
-  pw = constrain(pw, 0, 10);
-  float normalized = pw / 10.0;
+  // Use 15ms as full scale for color
+  pw = constrain(pw, 0, 15);
+  float normalized = pw / 15.0;
   
   uint8_t r, g, b;
   
