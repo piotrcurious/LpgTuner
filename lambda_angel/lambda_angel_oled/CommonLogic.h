@@ -13,6 +13,20 @@
 #define RPM_BINS 10
 #define LOAD_BINS 8
 
+// Widget mode definitions
+#define MODE_HEX 0
+#define MODE_DEC 1
+#define MODE_BAR 2
+#define MODE_BAR_FADE 0x21
+#define MODE_GRAPH_0 0x30
+#define MODE_GRAPH_1 0x31
+#define MODE_GAUGE 4
+#define MODE_HEATMAP_TEMP 5
+#define MODE_HEATMAP_LAMBDA 6
+#define MODE_HEATMAP_COMBINED 7
+
+enum LambdaZone { LAMBDA_LEAN, LAMBDA_STOICH, LAMBDA_RICH };
+
 // Mapping helper functions
 inline float fmap(float x, float in_min, float in_max, float out_min, float out_max) {
   if (std::abs(in_max - in_min) < 1e-6) return out_min;
@@ -52,6 +66,12 @@ inline void updateMapSample(float& mapValue, float newValue, int& count, float a
     mapValue = lowPass(mapValue, newValue, alpha);
     count++;
   }
+}
+
+inline LambdaZone getLambdaZone(float lambda) {
+    if (lambda > 1.05f) return LAMBDA_LEAN;
+    if (lambda < 0.95f) return LAMBDA_RICH;
+    return LAMBDA_STOICH;
 }
 
 // Color conversion (RGB565)
