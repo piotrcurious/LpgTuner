@@ -1,17 +1,18 @@
 /*
-  Wideband & Narrowband Lambda Simulator with Advanced Engine Dynamics
+  Advanced Wideband & Narrowband Lambda Simulator
 
   --------------------
-  Features:
+  New Features in this version:
   --------------------
-  1.  **Sensor Warm-up Simulation:** Dual-channel warm-up simulation.
-  2.  **Advanced Manifold Dynamics:** Differentiated filtering for air and fuel.
-  3.  **Transport Delay:** Simulated exhaust travel time.
-  4.  **High-Fidelity Dual Outputs:** Linear wideband and sigmoid narrowband.
+  1.  **RPM-Dependent Transport Delay:** Exhaust travel time now scales with RPM.
+  2.  **Sensor Aging Simulation:** Sluggishness for both O2 outputs.
+  3.  **Dynamic RPM Control:** Added a third potentiometer for RPM.
+  4.  **Signal Noise:** Subtle noise for realistic ADC behavior in controllers.
 */
 
 #include <driver/dac.h>
 #include <math.h>
+#include <stdlib.h>
 
 //================================================================================
 // --- SIMULATOR CONFIGURATION ---
@@ -22,11 +23,9 @@ const int   NUM_CYLINDERS = 4;
 const float VOLUMETRIC_EFFICIENCY = 0.85f;
 const float COMBUSTION_EFFICIENCY = 0.98f;
 
-const float AIR_TEMPERATURE_C = 20.0f;
-const float RELATIVE_HUMIDITY_PERCENT = 50.0f;
-
 const int POT_INJ_PULSE_PIN = 32;
 const int POT_MAP_PIN = 33;
+const int POT_RPM_PIN = 34;
 
 const int NARROWBAND_OUT_PIN = 25;
 const int WIDEBAND_OUT_PIN = 26;
@@ -35,14 +34,21 @@ const float MIN_INJ_PULSE_MS = 1.0f;
 const float MAX_INJ_PULSE_MS = 15.0f;
 const float MIN_MAP_KPA = 20.0f;
 const float MAX_MAP_KPA = 100.0f;
+const float MIN_RPM = 500.0f;
+const float MAX_RPM = 7000.0f;
+
+// --- Aging & Noise ---
+const float SENSOR_AGING_FACTOR = 0.5f;
+const float NOISE_AMPLITUDE = 0.005f;
 
 // --- Warm-up & Dynamics ---
-const unsigned long WARMUP_TIME_MS = 8000;  // 8 seconds warm-up for wideband sensor
+const unsigned long WARMUP_TIME_MS = 8000;
 const float INJ_FLOW_MG_MS = 8.5f;
 const float INJ_DEAD_TIME_MS = 0.8f;
-const float MANIFOLD_EMA_ALPHA = 0.12f;     // Slower manifold dynamics
-const float INJECTOR_EMA_ALPHA = 0.40f;     // Faster injector response
-const int   DELAY_BUFFER_SIZE = 12;
+const float MANIFOLD_EMA_ALPHA = 0.12f;
+const float INJECTOR_EMA_ALPHA = 0.40f;
+const int   MAX_DELAY_STEPS = 100;
+const int   IDLE_DELAY_STEPS = 60;
 
 // --- Wideband Scaling ---
 const float WIDEBAND_MIN_AFR = 10.0f;
@@ -60,8 +66,11 @@ const float RV_GAS_CONSTANT = 461.5f;
 // --- Global State ---
 float filteredInjVal = 2048.0f;
 float filteredMapVal = 2048.0f;
-float afrBuffer[DELAY_BUFFER_SIZE];
+float filteredRpmVal = 1000.0f;
+float afrBuffer[MAX_DELAY_STEPS];
 int   bufferIndex = 0;
+float agedNbVoltage = 0.45f;
+float agedWbVoltage = 0.00f;
 unsigned long startTime_ms;
 
 // --- Prototypes ---
@@ -72,13 +81,13 @@ float mapFloat(float x, float in_min, float in_max, float out_min, float out_max
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("Advanced Lambda Simulator (Improved Dynamics) Initialized.");
+  Serial.println("Advanced Wideband Simulator (RPM-Dynamics) Initialized.");
 
   analogReadResolution(12);
   dac_output_enable(DAC_CHANNEL_1);
   dac_output_enable(DAC_CHANNEL_2);
 
-  for (int i = 0; i < DELAY_BUFFER_SIZE; i++) afrBuffer[i] = STOICHIOMETRIC_AFR;
+  for (int i = 0; i < MAX_DELAY_STEPS; i++) afrBuffer[i] = STOICHIOMETRIC_AFR;
   startTime_ms = millis();
 }
 
@@ -89,13 +98,15 @@ void loop() {
   // 1. Filtering
   filteredInjVal = (INJECTOR_EMA_ALPHA * analogRead(POT_INJ_PULSE_PIN)) + ((1.0f - INJECTOR_EMA_ALPHA) * filteredInjVal);
   filteredMapVal = (MANIFOLD_EMA_ALPHA * analogRead(POT_MAP_PIN)) + ((1.0f - MANIFOLD_EMA_ALPHA) * filteredMapVal);
+  filteredRpmVal = (0.15f * analogRead(POT_RPM_PIN)) + (0.85f * filteredRpmVal);
 
   float injPulseLength_ms = mapFloat(filteredInjVal, 0, 4095, MIN_INJ_PULSE_MS, MAX_INJ_PULSE_MS);
   float map_kPa = mapFloat(filteredMapVal, 0, 4095, MIN_MAP_KPA, MAX_MAP_KPA);
+  float rpm = mapFloat(filteredRpmVal, 0, 4095, MIN_RPM, MAX_RPM);
 
   // 2. Combustion Model
   float singleCylinderVolume_L = ENGINE_DISPLACEMENT_L / NUM_CYLINDERS;
-  float airMass_mg = calculateAirMass_mg(map_kPa, AIR_TEMPERATURE_C, RELATIVE_HUMIDITY_PERCENT, singleCylinderVolume_L, VOLUMETRIC_EFFICIENCY);
+  float airMass_mg = calculateAirMass_mg(map_kPa, 20.0f, 50.0f, singleCylinderVolume_L, VOLUMETRIC_EFFICIENCY);
   float fuelMass_mg = calculateFuelMass_mg(injPulseLength_ms);
 
   float instAFR = STOICHIOMETRIC_AFR;
@@ -103,37 +114,48 @@ void loop() {
     instAFR = airMass_mg / (fuelMass_mg * COMBUSTION_EFFICIENCY);
   }
 
-  // 3. Delay
+  // 3. RPM-Dependent Transport Delay
+  int delaySteps = (int)(IDLE_DELAY_STEPS * (MIN_RPM / rpm));
+  if (delaySteps < 1) delaySteps = 1;
+  if (delaySteps > IDLE_DELAY_STEPS) delaySteps = IDLE_DELAY_STEPS;
+
+  int delayedIndex = (bufferIndex - delaySteps + MAX_DELAY_STEPS) % MAX_DELAY_STEPS;
+  float delayedAFR = afrBuffer[delayedIndex];
+
   afrBuffer[bufferIndex] = instAFR;
-  bufferIndex = (bufferIndex + 1) % DELAY_BUFFER_SIZE;
-  float delayedAFR = afrBuffer[bufferIndex];
+  bufferIndex = (bufferIndex + 1) % MAX_DELAY_STEPS;
+
   float delayedLambda = delayedAFR / STOICHIOMETRIC_AFR;
 
   // 4. Output Generation
-  float nbVoltage, wbVoltageTarget;
-
+  float targetNbV, targetWbV;
   if (!isWarmedUp) {
-    nbVoltage = 0.45f;
-    wbVoltageTarget = 0.0f; // Many wideband controllers output 0V or a specific "warming" signal
+    targetNbV = 0.45f;
+    targetWbV = 0.0f;
   } else {
-    nbVoltage = getNarrowbandVoltage(delayedLambda);
-    wbVoltageTarget = mapFloat(delayedAFR, WIDEBAND_MIN_AFR, WIDEBAND_MAX_AFR, WIDEBAND_MIN_VOLTAGE, WIDEBAND_MAX_VOLTAGE);
-    wbVoltageTarget = constrain(wbVoltageTarget, 0.0f, 5.0f);
+    targetNbV = getNarrowbandVoltage(delayedLambda);
+    targetWbV = mapFloat(delayedAFR, WIDEBAND_MIN_AFR, WIDEBAND_MAX_AFR, WIDEBAND_MIN_VOLTAGE, WIDEBAND_MAX_VOLTAGE);
+    targetWbV = constrain(targetWbV, 0.0f, 5.0f);
   }
 
-  // Set Narrowband
-  dac_output_voltage(DAC_CHANNEL_1, (int)((nbVoltage / 3.3f) * 255));
+  // Apply Aging
+  agedNbVoltage = (SENSOR_AGING_FACTOR * targetNbV) + ((1.0f - SENSOR_AGING_FACTOR) * agedNbVoltage);
+  agedWbVoltage = (SENSOR_AGING_FACTOR * targetWbV) + ((1.0f - SENSOR_AGING_FACTOR) * agedWbVoltage);
 
-  // Set Wideband (constrained to ESP32 3.3V)
-  float actualWbDacVoltage = constrain(wbVoltageTarget, 0.0f, 3.3f);
-  dac_output_voltage(DAC_CHANNEL_2, (int)((actualWbDacVoltage / 3.3f) * 255));
+  // Add Noise
+  float noise = ((float)rand() / (float)RAND_MAX - 0.5f) * NOISE_AMPLITUDE;
+
+  dac_output_voltage(DAC_CHANNEL_1, (int)(constrain(agedNbVoltage + noise, 0, 3.3f) / 3.3f * 255));
+
+  float actualWbDacVoltage = constrain(agedWbVoltage + noise, 0.0f, 3.3f);
+  dac_output_voltage(DAC_CHANNEL_2, (int)(actualWbDacVoltage / 3.3f * 255));
 
   // 5. Debug
-  if (currentTime % 500 < 20) {
-    Serial.print("Status: "); Serial.print(isWarmedUp ? "READY" : "WARMING");
+  if (currentTime % 500 < 25) {
+    Serial.print("RPM: "); Serial.print(rpm, 0);
     Serial.print(" | AFR (Del): "); Serial.print(delayedAFR, 1);
-    Serial.print(" | NB V: "); Serial.print(nbVoltage, 2);
-    Serial.print(" | WB V: "); Serial.println(wbVoltageTarget, 2);
+    Serial.print(" | NB V: "); Serial.print(agedNbVoltage, 2);
+    Serial.print(" | WB V: "); Serial.println(agedWbVoltage, 2);
   }
 
   delay(20);

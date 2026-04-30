@@ -1,22 +1,18 @@
 /*
-  Narrowband Lambda Sensor Simulator with Advanced Engine Dynamics
-
-  This sketch simulates the output of a narrowband O2 sensor by first modeling
-  the basic physics of an internal combustion engine.
+  Advanced Narrowband Lambda Sensor Simulator
 
   --------------------
   New Features in this version:
   --------------------
-  1.  **Sensor Warm-up Simulation:** On startup, the sensor stays inactive (held at 0.45V)
-      for a configurable period, mimicking the heating time of a real sensor.
-  2.  **Manifold Dynamics:** Improved input filtering to specifically model the
-      pressure lag in the intake manifold.
-  3.  **Transport Delay:** Realistic delay from cylinder to sensor.
-  4.  **Sigmoid Output:** High-fidelity narrowband signal curve.
+  1.  **RPM-Dependent Transport Delay:** Exhaust travel time now scales with RPM.
+  2.  **Sensor Aging Simulation:** Optional sluggishness for old sensors.
+  3.  **Dynamic RPM Control:** Added a third potentiometer for RPM.
+  4.  **Signal Noise:** Subtle Gaussian-like noise on the output voltage.
 */
 
 #include <driver/dac.h>
 #include <math.h>
+#include <stdlib.h>
 
 //================================================================================
 // --- SIMULATOR CONFIGURATION ---
@@ -26,32 +22,32 @@
 const float ENGINE_DISPLACEMENT_L = 2.0f;
 const int   NUM_CYLINDERS = 4;
 
-// --- 2. Ambient Conditions ---
-const float AIR_TEMPERATURE_C = 20.0f;
-const float RELATIVE_HUMIDITY_PERCENT = 50.0f;
-
-// --- 3. Dynamic Input Pins (ESP32) ---
+// --- 2. Dynamic Input Pins (ESP32) ---
 const int POT_INJ_PULSE_PIN = 32;
 const int POT_MAP_PIN = 33;
+const int POT_RPM_PIN = 34;       // NEW: Potentiometer for RPM control
 
-// --- 4. Output Pin (ESP32) ---
+// --- 3. Output Configuration ---
 const int LAMBDA_OUT_PIN = 25;
+const float SENSOR_AGING_FACTOR = 0.4f; // 1.0 = New, 0.1 = Very sluggish
+const float NOISE_AMPLITUDE = 0.005f;   // Simulated noise on output (V)
 
-// --- 5. Simulation Control ---
+// --- 4. Simulation Control ---
 const float MIN_INJ_PULSE_MS = 1.0f;
 const float MAX_INJ_PULSE_MS = 15.0f;
 const float MIN_MAP_KPA = 20.0f;
 const float MAX_MAP_KPA = 100.0f;
+const float MIN_RPM = 500.0f;
+const float MAX_RPM = 7000.0f;
 
-// --- 6. Sensor Warm-up ---
-const unsigned long WARMUP_TIME_MS = 5000;  // 5 seconds heater warm-up time
-
-// --- 7. Injector & Manifold Dynamics ---
+// --- 5. Warm-up & Dynamics ---
+const unsigned long WARMUP_TIME_MS = 5000;
 const float INJ_FLOW_MG_MS = 8.5f;
 const float INJ_DEAD_TIME_MS = 0.8f;
-const float MANIFOLD_EMA_ALPHA = 0.15f;     // Manifold filling dynamics
-const float INJECTOR_EMA_ALPHA = 0.35f;     // Injector response dynamics
-const int   DELAY_BUFFER_SIZE = 10;
+const float MANIFOLD_EMA_ALPHA = 0.15f;
+const float INJECTOR_EMA_ALPHA = 0.35f;
+const int   MAX_DELAY_STEPS = 100;      // Max steps in buffer
+const int   IDLE_DELAY_STEPS = 50;     // Max delay steps at idle
 
 //================================================================================
 // --- PHYSICAL CONSTANTS ---
@@ -63,8 +59,10 @@ const float RV_GAS_CONSTANT = 461.5f;
 // --- Global State ---
 float filteredInjVal = 2048.0f;
 float filteredMapVal = 2048.0f;
-float lambdaBuffer[DELAY_BUFFER_SIZE];
+float filteredRpmVal = 1000.0f;
+float lambdaBuffer[MAX_DELAY_STEPS];
 int   bufferIndex = 0;
+float agedOutputVoltage = 0.45f;
 unsigned long startTime_ms;
 
 // --- Prototypes ---
@@ -75,12 +73,12 @@ float mapFloat(float x, float in_min, float in_max, float out_min, float out_max
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("Narrowband Lambda Simulator (Advanced Dynamics) Initialized.");
+  Serial.println("Advanced Narrowband Simulator (RPM-Dynamics) Initialized.");
 
   analogReadResolution(12);
   dac_output_enable(DAC_CHANNEL_1);
 
-  for (int i = 0; i < DELAY_BUFFER_SIZE; i++) lambdaBuffer[i] = 1.0f;
+  for (int i = 0; i < MAX_DELAY_STEPS; i++) lambdaBuffer[i] = 1.0f;
   startTime_ms = millis();
 }
 
@@ -91,13 +89,15 @@ void loop() {
   // 1. Read and Filter Inputs
   filteredInjVal = (INJECTOR_EMA_ALPHA * analogRead(POT_INJ_PULSE_PIN)) + ((1.0f - INJECTOR_EMA_ALPHA) * filteredInjVal);
   filteredMapVal = (MANIFOLD_EMA_ALPHA * analogRead(POT_MAP_PIN)) + ((1.0f - MANIFOLD_EMA_ALPHA) * filteredMapVal);
+  filteredRpmVal = (0.1f * analogRead(POT_RPM_PIN)) + (0.9f * filteredRpmVal);
 
   float injPulseLength_ms = mapFloat(filteredInjVal, 0, 4095, MIN_INJ_PULSE_MS, MAX_INJ_PULSE_MS);
   float map_kPa = mapFloat(filteredMapVal, 0, 4095, MIN_MAP_KPA, MAX_MAP_KPA);
+  float rpm = mapFloat(filteredRpmVal, 0, 4095, MIN_RPM, MAX_RPM);
 
   // 2. Combustion Model
   float singleCylinderVolume_L = ENGINE_DISPLACEMENT_L / NUM_CYLINDERS;
-  float airMass_mg = calculateAirMass_mg(map_kPa, AIR_TEMPERATURE_C, RELATIVE_HUMIDITY_PERCENT, singleCylinderVolume_L);
+  float airMass_mg = calculateAirMass_mg(map_kPa, 20.0f, 50.0f, singleCylinderVolume_L);
   float fuelMass_mg = calculateFuelMass_mg(injPulseLength_ms);
 
   float instLambda = 1.0f;
@@ -105,28 +105,43 @@ void loop() {
     instLambda = (airMass_mg / fuelMass_mg) / STOICHIOMETRIC_AFR;
   }
 
-  // 3. Transport Delay
+  // 3. RPM-Dependent Transport Delay
+  // Delay steps inversely proportional to RPM
+  int delaySteps = (int)(IDLE_DELAY_STEPS * (MIN_RPM / rpm));
+  if (delaySteps < 1) delaySteps = 1;
+  if (delaySteps > IDLE_DELAY_STEPS) delaySteps = IDLE_DELAY_STEPS;
+
+  // Retrieve delayed value BEFORE overwriting oldest buffer slot
+  int delayedIndex = (bufferIndex - delaySteps + MAX_DELAY_STEPS) % MAX_DELAY_STEPS;
+  float delayedLambda = lambdaBuffer[delayedIndex];
+
+  // Store instantaneous value
   lambdaBuffer[bufferIndex] = instLambda;
-  bufferIndex = (bufferIndex + 1) % DELAY_BUFFER_SIZE;
-  float delayedLambda = lambdaBuffer[bufferIndex];
+  bufferIndex = (bufferIndex + 1) % MAX_DELAY_STEPS;
 
   // 4. Output Generation
-  float outputVoltage;
+  float targetVoltage;
   if (!isWarmedUp) {
-    outputVoltage = 0.45f; // Neutral voltage during warm-up
+    targetVoltage = 0.45f;
   } else {
-    outputVoltage = getNarrowbandVoltage(delayedLambda);
+    targetVoltage = getNarrowbandVoltage(delayedLambda);
   }
 
-  int dacValue = (outputVoltage / 3.3f) * 255;
-  dac_output_voltage(DAC_CHANNEL_1, dacValue);
+  // Apply Aging (low-pass filter)
+  agedOutputVoltage = (SENSOR_AGING_FACTOR * targetVoltage) + ((1.0f - SENSOR_AGING_FACTOR) * agedOutputVoltage);
+
+  // Add some Noise
+  float noise = ((float)rand() / (float)RAND_MAX - 0.5f) * NOISE_AMPLITUDE;
+  float finalVoltage = agedOutputVoltage + noise;
+
+  dac_output_voltage(DAC_CHANNEL_1, (int)(constrain(finalVoltage, 0, 3.3f) / 3.3f * 255));
 
   // 5. Debug
-  if (currentTime % 500 < 20) { // Throttle serial output
-    Serial.print("Status: "); Serial.print(isWarmedUp ? "READY" : "WARMING");
-    Serial.print(" | MAP: "); Serial.print(map_kPa, 1);
+  if (currentTime % 500 < 25) {
+    Serial.print("RPM: "); Serial.print(rpm, 0);
+    Serial.print(" | Delay: "); Serial.print(delaySteps);
     Serial.print(" | Lambda: "); Serial.print(delayedLambda, 2);
-    Serial.print(" | V_out: "); Serial.println(outputVoltage, 2);
+    Serial.print(" | V: "); Serial.println(finalVoltage, 2);
   }
 
   delay(20);
