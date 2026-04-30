@@ -34,6 +34,10 @@ const int analogInPin = 34; // Use GPIO34 (ADC1_CH6)
 #define MAX_ANALOG_VOLTAGE_A0 3.3
 #define ADC_RESOLUTION_A0 4096 // ESP32 has 12-bit ADC
 
+// Sensor reading globals
+float currentTemp = 0;
+float currentLambda = 0;
+
 // Define the widget element struct
 struct WidgetElement {
   String name;
@@ -319,24 +323,26 @@ void updateDisplay() {
 float readWidget(uint16_t source) {
   switch (source) {
     case 1: // MAX6675 thermocouple
-      {
-        if (millis() - last_conversion_time >= MAX6675_CONVERSION_RATE) { 
-          int status = thermoCouple.read();
-          last_conversion_time = millis();
-        }
-        float temp = thermoCouple.getTemperature();
-        return temp;
-      }
+      return currentTemp;
       
     case 2: // Analog input
-      {
-        float voltage = analogRead(analogInPin) * (MAX_ANALOG_VOLTAGE_A0 / ADC_RESOLUTION_A0);
-        return voltage;
-      }
+      return currentLambda;
       
     default: // Random values
       return random(0, 1024);
   }
+}
+
+void readSensors() {
+  // Read Temperature
+  if (millis() - last_conversion_time >= MAX6675_CONVERSION_RATE) {
+    thermoCouple.read();
+    currentTemp = thermoCouple.getTemperature();
+    last_conversion_time = millis();
+  }
+
+  // Read Lambda
+  currentLambda = analogRead(analogInPin) * (MAX_ANALOG_VOLTAGE_A0 / ADC_RESOLUTION_A0);
 }
 
 void clearArea(WidgetElement widget) {
@@ -483,6 +489,9 @@ void switch_layout() {
 }
 
 void loop() {
+  // Read all sensors
+  readSensors();
+
   // Uncomment to enable automatic layout switching
   // switch_layout();
   

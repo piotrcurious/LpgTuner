@@ -57,6 +57,10 @@ const int analogInPin = A0;
 #define MAX_ANALOG_VOLTAGE_A0 3.3 // max analog voltage for scaling 
 #define ADC_RESOLUTION_A0 1024 // resolution of ADC , 1024 for esp8266, 4096 for esp32
 
+// Sensor reading globals
+float currentTemp = 0;
+float currentLambda = 0;
+
 //*/
 
 // Define the widget element struct
@@ -503,50 +507,28 @@ void updateDisplay() {
 
 // Read a widget element from a sensor or a pin
 float readWidget(uint16_t source) {
-  // TODO: Replace this with your own code to read the widget element from a sensor or a pin
-  // For example, you can use analogRead(), digitalRead(), or a library function
-  // For now, we just return a random value
-      switch (source){
-      case 1:
-        {
-//uint32_t last_conversion_time = 0 ; 
-//#define MAX6675_CONVERSION_RATE 250 // minimum 250ms after setting select pin low until conversion will update output register.
+  switch (source) {
+    case 1: // MAX6675 thermocouple
+      return currentTemp;
 
-        if (millis() - last_conversion_time >= MAX6675_CONVERSION_RATE ) { 
+    case 2: // Lambda sensor
+      return currentLambda;
 
-//        thermoCouple.setSPIspeed(4000 * 1000); // set HSPI
-        int status = thermoCouple.read();
-        last_conversion_time = millis();
-        }
-        float temp = thermoCouple.getTemperature();
-//        temp = random(0,1024);
-        return temp;
-        }
-        break;  
+    default:
+      return random(0, 1024);
+  }
+}
 
-      case 2:
-        {
-//uint32_t last_conversion_time = 0 ; 
-//#define MAX6675_CONVERSION_RATE 250 // minimum 250ms after setting select pin low until conversion will update output register.
+void readSensors() {
+  // Read Temperature
+  if (millis() - last_conversion_time >= MAX6675_CONVERSION_RATE) {
+    thermoCouple.read();
+    currentTemp = thermoCouple.getTemperature();
+    last_conversion_time = millis();
+  }
 
-//        if (millis() - last_A0_conversion_time >= A0_CONVERSION_RATE ) { 
-
-        float temp = analogRead(analogInPin) * (MAX_ANALOG_VOLTAGE_A0/ADC_RESOLUTION_A0);
-
-//        last_A0_conversion_time = millis();
-//        }
-        
-//        temp = random(0,1024);
-        return temp;
-        }
-        break;  
-
-      default:
-        {
-        return random(0, 1024);
-        }
-        break;
-      }
+  // Read Lambda
+  currentLambda = analogRead(analogInPin) * (MAX_ANALOG_VOLTAGE_A0 / ADC_RESOLUTION_A0);
 }
 
 // Clear the area of a widget element
@@ -789,6 +771,8 @@ void switch_layout(){
 
 // Loop function
 void loop() {
+  // Read all sensors
+  readSensors();
 
 //  switch_layout(); // periodically
   // Update the display
