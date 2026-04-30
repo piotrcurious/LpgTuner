@@ -7,7 +7,8 @@
 #include "mock_tft.h"
 #include "mock_arduino.h"
 #else
-#include <TFT_eSPI.h>
+#define LGFX_AUTODETECT
+#include <LovyanGFX.hpp>
 #ifdef ESP32
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -24,7 +25,7 @@
 
 
 // Initialize display
-TFT_eSPI tft = TFT_eSPI();
+LGFX tft;
 
 // Define pins for sensors and injector
 const int throttlePin = 34;      // Throttle position sensor (ADC1)
@@ -105,10 +106,10 @@ unsigned long lastDisplayUpdate = 0;
 const unsigned long DISPLAY_UPDATE_INTERVAL = 100;
 
 // Color definitions
-#define COLOR_BACKGROUND TFT_BLACK
-#define COLOR_TEXT TFT_WHITE
-#define COLOR_AXIS TFT_WHITE
-#define COLOR_GRID TFT_DARKGREY
+#define COLOR_BACKGROUND 0x0000 // Black
+#define COLOR_TEXT 0xFFFF       // White
+#define COLOR_AXIS 0xFFFF       // White
+#define COLOR_GRID 0x7BEF       // Dark Grey
 
 // Forward declarations
 void IRAM_ATTR camISR();
@@ -122,7 +123,8 @@ void resetLifetimeData();
 void initDisplay();
 void drawGui();
 void readSensors();
-void measureInjectorPulseWidth();
+bool measureInjectorPulseWidth();
+void updateStatisticalMaps();
 void controlInjectorGauge();
 void updateVisualization();
 void drawScatterMap();
@@ -175,7 +177,13 @@ void setup() {
 
 void loop() {
   readSensors();
-  measureInjectorPulseWidth();
+  bool hasNewPulse = measureInjectorPulseWidth();
+
+  // Update statistical maps only when new pulse data arrives
+  if (hasNewPulse && rpm >= 100) {
+    updateStatisticalMaps();
+  }
+
   controlInjectorGauge();
   
   // Handle mode switching
@@ -184,10 +192,12 @@ void loop() {
   // Update display at controlled intervals
   if (millis() - lastDisplayUpdate >= DISPLAY_UPDATE_INTERVAL) {
     lastDisplayUpdate = millis();
+    tft.startWrite();
     updateVisualization();
     drawCurrentPulseWidth();
     drawSensorReadings();
     drawModeIndicator();
+    tft.endWrite();
   }
 
   // Periodic save
@@ -213,11 +223,12 @@ void initDisplay() {
 }
 
 void drawGui() {
+  tft.startWrite();
   tft.fillScreen(COLOR_BACKGROUND);
   
   // Draw title
   tft.setTextSize(1);
-  tft.setTextColor(TFT_CYAN, COLOR_BACKGROUND);
+  tft.setTextColor(0x07FF, COLOR_BACKGROUND); // Cyan
   tft.drawString("Engine Tuning Analyzer", 10, 5);
   
   // Draw chart frame
@@ -248,6 +259,7 @@ void drawGui() {
   tft.drawString("0", CHART_X_OFFSET - 15, CHART_Y_OFFSET + CHART_HEIGHT - 5);
   tft.drawString("6k", CHART_X_OFFSET + CHART_WIDTH - 10, CHART_Y_OFFSET + CHART_HEIGHT + 5);
   tft.drawString("100", CHART_X_OFFSET - 20, CHART_Y_OFFSET - 5);
+  tft.endWrite();
 }
 
 #ifdef ESP32
@@ -309,7 +321,7 @@ void readSensors() {
   }
 }
 
-void measureInjectorPulseWidth() {
+bool measureInjectorPulseWidth() {
   unsigned long pw = 0;
   bool dataAvailable = false;
 
@@ -338,6 +350,7 @@ void measureInjectorPulseWidth() {
     // Smooth the display value
     pulseWidthSmooth = pulseWidthSmooth * 0.8 + pulseWidth * 0.2;
   }
+  return dataAvailable;
 }
 
 void controlInjectorGauge() {
@@ -345,37 +358,62 @@ void controlInjectorGauge() {
   analogWrite(injectorGaugePin, pwmValue);
 }
 
+enum ButtonState {
+  BTN_IDLE,
+  BTN_PRESSED,
+  BTN_WAIT_RELEASE
+};
+
+ButtonState btnState = BTN_IDLE;
+unsigned long btnPressTime = 0;
+
 void handleButton() {
-  if (buttonPressed) {
-    // Wait to see if it is a long press
-    delay(50);
+  bool isPressed = (digitalRead(buttonPin) == LOW);
+  unsigned long now = millis();
 
-    // Note: digitalRead(buttonPin) == LOW means pressed
-    if (digitalRead(buttonPin) == LOW) {
-      // Potentially a long press
-      unsigned long duration = 0;
-      while(digitalRead(buttonPin) == LOW && duration < 3000) {
-        delay(10);
-        duration += 10;
+  switch(btnState) {
+    case BTN_IDLE:
+      if (isPressed) {
+        btnPressTime = now;
+        btnState = BTN_PRESSED;
+        buttonPressed = false; // Consume ISR flag
       }
+      break;
 
-      if (duration >= 2000) {
-        // Very long press: reset lifetime data
-        resetLifetimeData();
-        drawGui();
-      } else if (duration >= 600) {
-        // Long press: switch overlay
-        currentOverlay = (OverlayMode)((currentOverlay + 1) % OVERLAY_COUNT);
-        drawGui();
+    case BTN_PRESSED:
+      if (!isPressed) {
+        // Released - determine if it was a short or long press
+        unsigned long duration = now - btnPressTime;
+        if (duration >= 50) { // Debounce
+           if (duration >= 2000) {
+             resetLifetimeData();
+             drawGui();
+           } else if (duration >= 600) {
+             currentOverlay = (OverlayMode)((currentOverlay + 1) % OVERLAY_COUNT);
+             drawGui();
+           } else {
+             switchVisualizationMode();
+           }
+        }
+        btnState = BTN_IDLE;
       } else {
-        // Short press: switch visualization mode
-        switchVisualizationMode();
+        // Still pressed - could provide visual feedback for very long press
+        if (now - btnPressTime >= 2000) {
+          // Could show a "Resetting..." message here if desired
+        }
       }
-    } else {
-      // Very short press
-      switchVisualizationMode();
-    }
+      break;
 
+    case BTN_WAIT_RELEASE:
+      if (!isPressed) btnState = BTN_IDLE;
+      break;
+  }
+
+  // Also handle the legacy ISR flag for compatibility or safety
+  if (buttonPressed && btnState == BTN_IDLE) {
+    // If ISR triggered but we missed it in IDLE
+    btnPressTime = now;
+    btnState = BTN_PRESSED;
     buttonPressed = false;
   }
 }
@@ -392,10 +430,11 @@ void switchVisualizationMode() {
   }
   
   // Show mode name briefly
-  tft.fillRect(80, 100, 160, 40, TFT_NAVY);
-  tft.drawRect(80, 100, 160, 40, TFT_WHITE);
+  tft.startWrite();
+  tft.fillRect(80, 100, 160, 40, 0x000F); // Navy
+  tft.drawRect(80, 100, 160, 40, 0xFFFF); // White
   tft.setTextSize(2);
-  tft.setTextColor(TFT_YELLOW, TFT_NAVY);
+  tft.setTextColor(0xFFE0, 0x000F); // Yellow, Navy
   
   const char* modeName = "";
   switch(currentMode) {
@@ -410,9 +449,33 @@ void switchVisualizationMode() {
   int textWidth = strlen(modeName) * 12;
   tft.setCursor(160 - textWidth/2, 115);
   tft.println(modeName);
+  tft.endWrite();
   
   delay(1000);
   drawGui();
+}
+
+void updateStatisticalMaps() {
+  // Calculate cell indices
+  int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1);
+  float load = (mapPressure * throttlePos) / 100.0;
+  int row = constrain((int)(load / 11.11), 0, HEATMAP_ROWS - 1);
+
+  HeatMapCell* cell = &heatMap[col][row];
+
+  // Update EMA
+  if (cell->count == 0) {
+    cell->avgPulseWidth = pulseWidth;
+  } else {
+    // alpha = 0.1 for slow moving average, reactive but stable
+    cell->avgPulseWidth = (cell->avgPulseWidth * 0.9f) + (pulseWidth * 0.1f);
+  }
+
+  // Update Lifetime Average
+  cell->sumPulseWidth += pulseWidth;
+  cell->sumLambda += lambdaValue;
+  cell->count++;
+  cell->lastUpdate = millis();
 }
 
 void updateVisualization() {
@@ -456,26 +519,6 @@ void drawScatterMap() {
 }
 
 void drawHeatMap() {
-  if (rpm < 100) return;
-  
-  // Calculate cell indices
-  int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1); // 500 RPM per cell
-  float load = (mapPressure * throttlePos) / 100.0;
-  int row = constrain((int)(load / 11.11), 0, HEATMAP_ROWS - 1); // ~11.11% load per cell
-  
-  // Update cell data with Exponential Moving Average (EMA)
-  HeatMapCell* cell = &heatMap[col][row];
-  if (cell->count == 0) {
-    cell->avgPulseWidth = pulseWidth;
-  } else {
-    // alpha = 0.1 for slow moving average, reactive but stable
-    cell->avgPulseWidth = (cell->avgPulseWidth * 0.9f) + (pulseWidth * 0.1f);
-  }
-  cell->sumPulseWidth += pulseWidth;
-  cell->sumLambda += lambdaValue;
-  cell->count++;
-  cell->lastUpdate = millis();
-  
   // Draw all cells
   int cellWidth = CHART_WIDTH / HEATMAP_COLS;
   int cellHeight = CHART_HEIGHT / HEATMAP_ROWS;
@@ -573,22 +616,6 @@ void resetLifetimeData() {
 }
 
 void draw3DSurface() {
-  if (rpm < 100) return;
-  
-  // Update heat map data with EMA
-  int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1);
-  float load = (mapPressure * throttlePos) / 100.0;
-  int row = constrain((int)(load / 11.11), 0, HEATMAP_ROWS - 1);
-  
-  HeatMapCell* cell = &heatMap[col][row];
-  if (cell->count == 0) {
-    cell->avgPulseWidth = pulseWidth;
-  } else {
-    cell->avgPulseWidth = (cell->avgPulseWidth * 0.9f) + (pulseWidth * 0.1f);
-  }
-  cell->count++;
-  cell->lastUpdate = millis();
-  
   // To avoid artifacts, we should clear the chart area before redrawing 3D surface
   // However, full clear might flicker. For now, we overwrite.
 
@@ -645,16 +672,6 @@ void drawAFRMap() {
 }
 
 void drawDensityMap() {
-  if (rpm < 100) return;
-  
-  // Update heat map for density counting
-  int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1);
-  float load = (mapPressure * throttlePos) / 100.0;
-  int row = constrain((int)(load / 11.11), 0, HEATMAP_ROWS - 1);
-  
-  heatMap[col][row].count++;
-  heatMap[col][row].lastUpdate = millis();
-  
   // Find max count for scaling
   int maxCount = 1;
   for (int c = 0; c < HEATMAP_COLS; c++) {
@@ -788,10 +805,10 @@ uint16_t getColorForDiff(float diff) {
 
   if (normalized < 0) {
     // Negative diff (Lower than avg) -> Blue gradient
-    return interpolateColor(TFT_GREEN, TFT_BLUE, -normalized);
+    return interpolateColor(0x07E0, 0x001F, -normalized); // Green to Blue
   } else {
     // Positive diff (Higher than avg) -> Red gradient
-    return interpolateColor(TFT_GREEN, TFT_RED, normalized);
+    return interpolateColor(0x07E0, 0xF800, normalized); // Green to Red
   }
 }
 
@@ -802,21 +819,21 @@ uint16_t getColorForAFR(float lambda) {
   
   if (lambda < 0.9) {
     // Very rich - Red
-    return TFT_RED;
+    return 0xF800; // Red
   } else if (lambda < 1.0) {
     // Slightly rich - Orange to Yellow
     float t = (lambda - 0.9) / 0.1;
-    return interpolateColor(TFT_RED, TFT_YELLOW, t);
+    return interpolateColor(0xF800, 0xFFE0, t); // Red to Yellow
   } else if (lambda < 1.1) {
     // Stoichiometric - Green
-    return TFT_GREEN;
+    return 0x07E0; // Green
   } else if (lambda < 1.2) {
     // Slightly lean - Cyan
     float t = (lambda - 1.1) / 0.1;
-    return interpolateColor(TFT_GREEN, TFT_CYAN, t);
+    return interpolateColor(0x07E0, 0x07FF, t); // Green to Cyan
   } else {
     // Very lean - Blue
-    return TFT_BLUE;
+    return 0x001F; // Blue
   }
 }
 

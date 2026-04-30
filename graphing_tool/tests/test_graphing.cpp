@@ -132,7 +132,7 @@ void test_heatmap_update() {
     pulseWidth = 5.0;
     lambdaValue = 1.0;
 
-    drawHeatMap();
+    updateStatisticalMaps();
 
     int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1);
     float load = (mapPressure * throttlePos) / 100.0;
@@ -145,7 +145,7 @@ void test_heatmap_update() {
 
     // Add another point in same cell
     pulseWidth = 7.0;
-    drawHeatMap();
+    updateStatisticalMaps();
     assert(heatMap[col][row].count == 2);
     // EMA: 5.0 * 0.9 + 7.0 * 0.1 = 4.5 + 0.7 = 5.2
     assert(std::abs(heatMap[col][row].avgPulseWidth - 5.2f) < 0.001f);
@@ -187,7 +187,7 @@ void test_density_map() {
     throttlePos = 100;
     mapPressure = 11.12; // Row 1
 
-    drawDensityMap();
+    updateStatisticalMaps();
     int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1);
     float load = (mapPressure * throttlePos) / 100.0;
     int row = constrain((int)(load / 11.11), 0, HEATMAP_ROWS - 1);
@@ -196,7 +196,7 @@ void test_density_map() {
 
     assert(heatMap[col][row].count == 1);
 
-    drawDensityMap();
+    updateStatisticalMaps();
     assert(heatMap[1][1].count == 2);
 
     std::cout << "Density Map test passed!" << std::endl;
@@ -214,7 +214,7 @@ void test_lifetime_and_diff() {
 
     // First sample: 10ms
     pulseWidth = 10.0;
-    drawHeatMap();
+    updateStatisticalMaps();
 
     int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1);
     int row = constrain((int)((mapPressure * throttlePos / 100.0) / 11.11), 0, HEATMAP_ROWS - 1);
@@ -227,7 +227,7 @@ void test_lifetime_and_diff() {
 
     // Second sample: 20ms
     pulseWidth = 20.0;
-    drawHeatMap();
+    updateStatisticalMaps();
 
     assert(heatMap[col][row].count == 2);
     // EMA: 10*0.9 + 20*0.1 = 9 + 2 = 11
@@ -262,11 +262,13 @@ int main() {
     test_pulse_width_measurement();
     test_sensor_mapping();
     test_mode_switching();
+void test_non_blocking_button();
     test_heatmap_update();
     test_color_functions();
     test_density_map();
     test_lifetime_and_diff();
     test_persistence();
+    test_non_blocking_button();
 
     std::cout << "All tests passed!" << std::endl;
     return 0;
@@ -281,7 +283,7 @@ void test_persistence() {
     mapPressure = 44.45; // Row 4
     pulseWidth = 12.0;
 
-    drawHeatMap();
+    updateStatisticalMaps();
     int col = constrain((int)(rpm / 500), 0, HEATMAP_COLS - 1);
     int row = constrain((int)((mapPressure * throttlePos / 100.0) / 11.11), 0, HEATMAP_ROWS - 1);
 
@@ -306,4 +308,37 @@ void test_persistence() {
     assert(heatMap[col][row].count == 0);
 
     std::cout << "Persistence test passed!" << std::endl;
+}
+
+void test_non_blocking_button() {
+    std::cout << "Testing Non-blocking Button..." << std::endl;
+
+    btnState = BTN_IDLE;
+    currentMode = MODE_SCATTER_MAP;
+
+    // Simulate press
+    setDigitalRead(buttonPin, LOW);
+    handleButton();
+    assert(btnState == BTN_PRESSED);
+
+    // Hold for 100ms (short press)
+    advance_micros(100000);
+    handleButton();
+    assert(btnState == BTN_PRESSED);
+
+    // Release
+    setDigitalRead(buttonPin, HIGH);
+    handleButton();
+    assert(btnState == BTN_IDLE);
+    assert(currentMode == MODE_HEAT_MAP);
+
+    // Long press
+    setDigitalRead(buttonPin, LOW);
+    handleButton();
+    advance_micros(700000); // 700ms
+    setDigitalRead(buttonPin, HIGH);
+    handleButton();
+    assert(currentOverlay == OVERLAY_LIFETIME);
+
+    std::cout << "Non-blocking Button test passed!" << std::endl;
 }
