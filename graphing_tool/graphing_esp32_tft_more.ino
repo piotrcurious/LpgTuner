@@ -168,8 +168,9 @@ void setup() {
   // Initialize display
   tft.init();
   tft.setRotation(1); // Landscape mode
-  initDisplay();
+  tft.startWrite();
   drawGui();
+  tft.endWrite();
   
   Serial.println("Initialization complete");
   Serial.println("Press BOOT button to switch visualization modes");
@@ -218,13 +219,12 @@ void loop() {
 }
 
 void initDisplay() {
-  tft.fillScreen(COLOR_BACKGROUND);
   tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
 }
 
 void drawGui() {
-  tft.startWrite();
   tft.fillScreen(COLOR_BACKGROUND);
+  initDisplay();
   
   // Draw title
   tft.setTextSize(1);
@@ -259,7 +259,6 @@ void drawGui() {
   tft.drawString("0", CHART_X_OFFSET - 15, CHART_Y_OFFSET + CHART_HEIGHT - 5);
   tft.drawString("6k", CHART_X_OFFSET + CHART_WIDTH - 10, CHART_Y_OFFSET + CHART_HEIGHT + 5);
   tft.drawString("100", CHART_X_OFFSET - 20, CHART_Y_OFFSET - 5);
-  tft.endWrite();
 }
 
 #ifdef ESP32
@@ -387,10 +386,14 @@ void handleButton() {
         if (duration >= 50) { // Debounce
            if (duration >= 2000) {
              resetLifetimeData();
+             tft.startWrite();
              drawGui();
+             tft.endWrite();
            } else if (duration >= 600) {
              currentOverlay = (OverlayMode)((currentOverlay + 1) % OVERLAY_COUNT);
+             tft.startWrite();
              drawGui();
+             tft.endWrite();
            } else {
              switchVisualizationMode();
            }
@@ -421,6 +424,7 @@ void handleButton() {
 void switchVisualizationMode() {
   currentMode = (VisualizationMode)((currentMode + 1) % MODE_COUNT);
   
+  tft.startWrite();
   // Clear screen and redraw GUI for new mode
   drawGui();
   
@@ -430,7 +434,6 @@ void switchVisualizationMode() {
   }
   
   // Show mode name briefly
-  tft.startWrite();
   tft.fillRect(80, 100, 160, 40, 0x000F); // Navy
   tft.drawRect(80, 100, 160, 40, 0xFFFF); // White
   tft.setTextSize(2);
@@ -452,7 +455,10 @@ void switchVisualizationMode() {
   tft.endWrite();
   
   delay(1000);
+
+  tft.startWrite();
   drawGui();
+  tft.endWrite();
 }
 
 void updateStatisticalMaps() {
