@@ -19,6 +19,7 @@ void test_bins() {
     assert(getLoadBin(240) == 7);
     assert(getRPMBin(1000) == 1);
     assert(getLoadBin(40) == 1);
+    // Boundary and OOB
     assert(getRPMBin(-100) == 0);
     assert(getRPMBin(12000) == 9);
     assert(getLoadBin(10) == 0);
@@ -65,6 +66,28 @@ void test_heatmap_simulation() {
     std::cout << "test_heatmap_simulation passed" << std::endl;
 }
 
+void test_color565() {
+    assert(color565(0, 0, 0) == 0x0000);
+    assert(color565(255, 255, 255) == 0xFFFF);
+    assert(color565(255, 0, 0) == 0xF800);
+    assert(color565(0, 255, 0) == 0x07E0);
+    assert(color565(0, 0, 255) == 0x001F);
+    std::cout << "test_color565 passed" << std::endl;
+}
+
+void test_color_gradients() {
+    uint16_t c_min = getTempColor(20, 20, 800);
+    uint16_t c_max = getTempColor(800, 20, 800);
+    assert(c_min == color565(0, 0, 255));
+    assert(c_max == color565(255, 0, 0));
+
+    // Gradient points
+    assert(getLambdaColor(0.7f) == color565(255, 0, 0));
+    assert(getLambdaColor(1.3f) == color565(0, 0, 255));
+
+    std::cout << "test_color_gradients passed" << std::endl;
+}
+
 int main() {
     test_fmap();
     test_bins();
@@ -72,6 +95,8 @@ int main() {
     test_units();
     test_lambda_zones();
     test_heatmap_simulation();
+    test_color565();
+    test_color_gradients();
     std::cout << "All tests passed!" << std::endl;
     return 0;
 }
