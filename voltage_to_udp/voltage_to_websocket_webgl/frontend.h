@@ -20,6 +20,8 @@ const char* html_index = R"rawliteral(
     .trigger-indicator { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #333; margin-left: 5px; }
     .trigger-active { background: #f00; box-shadow: 0 0 5px #f00; }
     h2 { margin: 0 0 10px 0; font-size: 16px; letter-spacing: 1px; color: #aaa; border-bottom: 1px solid #333; padding-bottom: 5px; }
+    .wifi-config { margin-top: 15px; border-top: 1px solid #333; padding-top: 10px; }
+    .wifi-config input { background: #111; color: #0f0; border: 1px solid #444; padding: 4px; margin-bottom: 5px; width: 150px; font-family: inherit; }
   </style>
 </head>
 <body>
@@ -35,6 +37,12 @@ const char* html_index = R"rawliteral(
       <div style="margin-bottom: 5px; font-size: 12px; color: #888;">TRIGGER MODE</div>
       <button id="btnMode0" class="btn active" onclick="setMode(0)">INDEPENDENT</button>
       <button id="btnMode1" class="btn" onclick="setMode(1)">CAM WHEEL</button>
+    </div>
+    <div class="wifi-config">
+      <div style="margin-bottom: 5px; font-size: 12px; color: #888;">WIFI CONFIG (STA)</div>
+      <input type="text" id="ssid" placeholder="SSID"><br>
+      <input type="password" id="pass" placeholder="PASSWORD"><br>
+      <button class="btn" onclick="saveWifi()">SAVE & REBOOT</button>
     </div>
   </div>
   <div class="stat-overlay" id="stats">LINK: DOWN | FPS: 0 | SEQ: 0</div>
@@ -93,33 +101,6 @@ const char* html_index = R"rawliteral(
       [1, 0, 1, 1], // Magenta
       [0, 1, 0, 1]  // Green
     ];
-
-    function drawGrid() {
-      // Use the same program but with a gray color
-      const u_color = gl.getUniformLocation(program, 'u_color');
-      const u_y_offset = gl.getUniformLocation(program, 'u_y_offset');
-      const u_y_scale = gl.getUniformLocation(program, 'u_y_scale');
-      const a_x = gl.getAttribLocation(program, 'a_x');
-      const a_y = gl.getAttribLocation(program, 'a_y');
-
-      gl.uniform4f(u_color, 0.2, 0.2, 0.2, 1.0);
-      gl.uniform1f(u_y_offset, 0.0);
-      gl.uniform1f(u_y_scale, 1.0);
-
-      const gridLines = [];
-      // Horizontal lines
-      for(let y=-1; y<=1; y+=0.2) {
-        gridLines.push(-1, y * 4095, 1, y * 4095); // Using raw units to bypass shader math or match it
-      }
-      // Vertical lines
-      for(let x=-1; x<=1; x+=0.2) {
-        gridLines.push(x, -4095, x, 4095);
-      }
-
-      // This is a bit hacky with the current shader, ideally we'd have a separate grid shader
-      // but let's just draw some static lines if we wanted to.
-      // For now, let's keep it clean.
-    }
 
     function render() {
       gl.viewport(0, 0, canvas.width, canvas.height);
@@ -217,6 +198,14 @@ const char* html_index = R"rawliteral(
         window.ws.send('M' + m);
         document.getElementById('btnMode0').classList.toggle('active', m === 0);
         document.getElementById('btnMode1').classList.toggle('active', m === 1);
+      }
+    }
+
+    function saveWifi() {
+      const s = document.getElementById('ssid').value;
+      const p = document.getElementById('pass').value;
+      if(window.ws && window.ws.readyState === WebSocket.OPEN) {
+        window.ws.send('W;' + s + ';' + p);
       }
     }
 
