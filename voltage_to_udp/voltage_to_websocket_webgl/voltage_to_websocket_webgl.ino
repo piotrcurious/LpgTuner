@@ -32,6 +32,8 @@ float sim_phase = 0;
 #define TRIGGER_PINS_COUNT 4
 uint8_t trigger_pins[] = {12, 13, 14, 27};
 volatile bool trigger_occurred[TRIGGER_PINS_COUNT] = {false, false, false, false};
+volatile uint32_t last_trigger_event_time[TRIGGER_PINS_COUNT] = {0, 0, 0, 0};
+#define TRIGGER_HOLDOFF_MS 10
 
 enum TriggerMode { MODE_INDEPENDENT, MODE_CAM_WHEEL };
 volatile TriggerMode currentMode = MODE_INDEPENDENT;
@@ -44,6 +46,7 @@ struct ScopePacket {
   uint32_t sequence;
   uint32_t timestamp;
   uint8_t trigger_flags;
+  uint32_t free_heap;
   uint16_t data[SAMPLES_PER_PACKET * ADC_CHANNELS_COUNT];
 };
 #pragma pack(pop)
@@ -61,16 +64,23 @@ volatile uint32_t packets_sent = 0;
 volatile uint32_t samples_processed = 0;
 
 // Interrupts
-void IRAM_ATTR handleTrigger0() {
-  if (currentMode == MODE_INDEPENDENT) trigger_occurred[0] = true;
-  else {
+void IRAM_ATTR handleTrigger(int idx) {
+  uint32_t now = millis();
+  if (now - last_trigger_event_time[idx] < TRIGGER_HOLDOFF_MS) return;
+  last_trigger_event_time[idx] = now;
+
+  if (idx == 0 && currentMode == MODE_CAM_WHEEL) {
     trigger_occurred[cam_wheel_target] = true;
     cam_wheel_target = (cam_wheel_target + 1) % ADC_CHANNELS_COUNT;
+  } else if (currentMode == MODE_INDEPENDENT) {
+    trigger_occurred[idx] = true;
   }
 }
-void IRAM_ATTR handleTrigger1() { trigger_occurred[1] = true; }
-void IRAM_ATTR handleTrigger2() { trigger_occurred[2] = true; }
-void IRAM_ATTR handleTrigger3() { trigger_occurred[3] = true; }
+
+void IRAM_ATTR handleTrigger0() { handleTrigger(0); }
+void IRAM_ATTR handleTrigger1() { handleTrigger(1); }
+void IRAM_ATTR handleTrigger2() { handleTrigger(2); }
+void IRAM_ATTR handleTrigger3() { handleTrigger(3); }
 
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
   if (type == WS_EVT_DATA) {
@@ -80,7 +90,6 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
         currentMode = (data[1] == '1') ? MODE_CAM_WHEEL : MODE_INDEPENDENT;
       } else if (len > 0 && data[0] == 'S') {
         simulation_mode = (data[1] == '1');
-        Serial.printf("Simulation Mode: %s\n", simulation_mode ? "ON" : "OFF");
       } else if (len > 0 && data[0] == 'W') {
         String cmd = String((char*)data).substring(2);
         int sep = cmd.indexOf(';');
@@ -134,33 +143,39 @@ void scope_task(void *pv) {
   packet_ptr = (ScopePacket*)malloc(sizeof(ScopePacket));
 
   while (1) {
+    if (ws.count() == 0) {
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
+
     if (simulation_mode) {
-      // Simulation Loop
-      for (int i = 0; i < 64; i++) { // Process in small chunks to allow task yield
+      for (int i = 0; i < 64; i++) {
         for (int ch = 0; ch < ADC_CHANNELS_COUNT; ch++) {
           float val = 0;
           if (ch == 0) val = 2048 + 1000 * sin(sim_phase);
           else if (ch == 1) val = 2048 + 1000 * cos(sim_phase * 1.5);
           else if (ch == 2) val = (fmod(sim_phase, 2.0 * PI) / (2.0 * PI)) * 4095;
           else if (ch == 3) val = (sin(sim_phase * 5.0) > 0) ? 3500 : 500;
-
           packet_ptr->data[sample_idx * ADC_CHANNELS_COUNT + ch] = (uint16_t)val;
         }
         sim_phase += 0.05;
+        // Simulated trigger every ~100 samples
+        if (packet_seq % 10 == 0 && sample_idx == 0) trigger_occurred[0] = true;
+
         sample_idx++;
         if (sample_idx >= SAMPLES_PER_PACKET) {
           packet_ptr->sequence = packet_seq++;
           packet_ptr->timestamp = micros();
-          packet_ptr->trigger_flags = 0;
+          packet_ptr->free_heap = ESP.getFreeHeap();
+          packet_ptr->trigger_flags = (currentMode == MODE_CAM_WHEEL) ? (1 << 7) : 0; // Bit 7: Cam Mode Active
           for (int t = 0; t < TRIGGER_PINS_COUNT; t++) if (trigger_occurred[t]) { packet_ptr->trigger_flags |= (1 << t); trigger_occurred[t] = false; }
           ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
           packets_sent++;
           sample_idx = 0;
         }
       }
-      vTaskDelay(pdMS_TO_TICKS(5)); // Rate limit simulation
+      vTaskDelay(pdMS_TO_TICKS(5));
     } else {
-      // Real ADC Loop
       uint32_t out_len = 0;
       esp_err_t ret = adc_continuous_read(adc_handle, read_raw, ADC_READ_BUF_BYTES, &out_len, ADC_READ_TIMEOUT_MS);
       if (ret == ESP_OK && out_len > 0) {
@@ -180,7 +195,8 @@ void scope_task(void *pv) {
             if (sample_idx >= SAMPLES_PER_PACKET) {
               packet_ptr->sequence = packet_seq++;
               packet_ptr->timestamp = micros();
-              packet_ptr->trigger_flags = 0;
+              packet_ptr->free_heap = ESP.getFreeHeap();
+              packet_ptr->trigger_flags = (currentMode == MODE_CAM_WHEEL) ? (1 << 7) : 0;
               for (int t = 0; t < TRIGGER_PINS_COUNT; t++) if (trigger_occurred[t]) { packet_ptr->trigger_flags |= (1 << t); trigger_occurred[t] = false; }
               ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
               packets_sent++;
@@ -240,10 +256,5 @@ void setup() {
 
 void loop() {
   ws.cleanupClients();
-  static uint32_t last_print = 0;
-  if(millis() - last_print > 1000) {
-    Serial.printf("Pkts: %u | Smpl: %u | Mode: %s\n", packets_sent, samples_processed, simulation_mode ? "SIM" : "REAL");
-    last_print = millis();
-  }
   delay(100);
 }
