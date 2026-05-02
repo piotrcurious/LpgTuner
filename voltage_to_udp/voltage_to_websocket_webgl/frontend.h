@@ -42,6 +42,11 @@ const char* html_index = R"rawliteral(
     </div>
 
     <div class="ctrl-group">
+      <div style="margin-bottom: 5px; font-size: 10px; color: #888;">DEBUG / SIMULATION</div>
+      <button id="btnSim" class="btn" onclick="toggleSim()">SIMULATION: OFF</button>
+    </div>
+
+    <div class="ctrl-group">
       <div style="margin-bottom: 5px; font-size: 10px; color: #888;">WIFI CONFIG</div>
       <input style="background:#111;color:#0f0;border:1px solid #444;width:80px;font-size:10px;" type="text" id="ssid" placeholder="SSID">
       <input style="background:#111;color:#0f0;border:1px solid #444;width:80px;font-size:10px;" type="password" id="pass" placeholder="PASS">
@@ -71,6 +76,8 @@ const char* html_index = R"rawliteral(
   <script>
     const canvas = document.getElementById('canvas');
     const gl = canvas.getContext('webgl', { antialias: true });
+    let ws;
+    let simOn = false;
 
     function createShader(gl, type, source) {
       const s = gl.createShader(type);
@@ -109,6 +116,7 @@ const char* html_index = R"rawliteral(
 
     function initUI() {
       const container = document.getElementById('chan-controls');
+      container.innerHTML = '';
       for(let i=0; i<CHANNELS; i++) {
         const div = document.createElement('div');
         div.className = 'chan';
@@ -139,13 +147,13 @@ const char* html_index = R"rawliteral(
 
     const gridBuffer = gl.createBuffer();
     function createGrid() {
-      const lines = [];
+      const gridPoints = [];
       for(let i=-10; i<=10; i++) {
-        lines.push(-1, i/10, 1, i/10); // Horizontal
-        lines.push(i/10, -1, i/10, 1); // Vertical
+        gridPoints.push(-1, (i/10 + 1)*2048, 1, (i/10 + 1)*2048);
+        gridPoints.push(i/10, 0, i/10, 4095);
       }
       gl.bindBuffer(gl.ARRAY_BUFFER, gridBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(lines), gl.STATIC_DRAW);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(gridPoints), gl.STATIC_DRAW);
     }
 
     function drawGrid() {
@@ -161,16 +169,7 @@ const char* html_index = R"rawliteral(
       gl.uniform1f(gl.getUniformLocation(program, 'u_offset'), 0);
       gl.uniform1f(gl.getUniformLocation(program, 'u_scale'), 1);
       gl.uniform1f(gl.getUniformLocation(program, 'u_tb'), 1);
-      // Hacky way to draw with same shader: a_y in lines are already -1..1 but shader expects 0..4095
-      // We can fix this by passing a flag or using a simpler grid shader.
-      // For now, let's just scale the grid lines in buffer to 0..4095
-      const gridPoints = [];
-      for(let i=-10; i<=10; i++) {
-        gridPoints.push(-1, (i/10 + 1)*2048, 1, (i/10 + 1)*2048);
-        gridPoints.push(i/10, 0, i/10, 4095);
-      }
-      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(gridPoints), gl.STATIC_DRAW);
-      gl.drawArrays(gl.LINES, 0, gridPoints.length/2);
+      gl.drawArrays(gl.LINES, 0, 44);
     }
 
     function render() {
@@ -178,7 +177,7 @@ const char* html_index = R"rawliteral(
       gl.clearColor(0.01, 0.01, 0.01, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.enable(gl.BLEND);
-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE); // Additive blending for "glow"
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
 
       drawGrid();
 
@@ -235,7 +234,7 @@ const char* html_index = R"rawliteral(
 
     function connect() {
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(protocol + '//' + location.host + '/ws');
+      ws = new WebSocket(protocol + '//' + location.host + '/ws');
       ws.binaryType = 'arraybuffer';
       ws.onopen = () => { document.getElementById('stats').innerText = 'LINK: UP'; };
       ws.onclose = () => { document.getElementById('stats').innerText = 'LINK: DOWN'; setTimeout(connect, 2000); };
@@ -253,20 +252,28 @@ const char* html_index = R"rawliteral(
         document.getElementById('stats').innerText = `LINK: UP | FPS: ${fps} | SEQ: ${seq}`;
         requestAnimationFrame(render);
       };
-      window.ws = ws;
     }
 
     function setMode(m) {
-      if(window.ws && window.ws.readyState === WebSocket.OPEN) {
-        window.ws.send('M' + m);
+      if(ws && ws.readyState === WebSocket.OPEN) {
+        ws.send('M' + m);
         document.getElementById('btnMode0').classList.toggle('active', m === 0);
         document.getElementById('btnMode1').classList.toggle('active', m === 1);
       }
     }
 
+    function toggleSim() {
+      simOn = !simOn;
+      if(ws && ws.readyState === WebSocket.OPEN) {
+        ws.send('S' + (simOn ? '1' : '0'));
+        document.getElementById('btnSim').innerText = 'SIMULATION: ' + (simOn ? 'ON' : 'OFF');
+        document.getElementById('btnSim').classList.toggle('active', simOn);
+      }
+    }
+
     function saveWifi() {
       const s = document.getElementById('ssid').value, p = document.getElementById('pass').value;
-      if(window.ws && window.ws.readyState === WebSocket.OPEN) window.ws.send('W;' + s + ';' + p);
+      if(ws && ws.readyState === WebSocket.OPEN) ws.send('W;' + s + ';' + p);
     }
 
     window.onresize = () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight; gl.viewport(0, 0, canvas.width, canvas.height); };

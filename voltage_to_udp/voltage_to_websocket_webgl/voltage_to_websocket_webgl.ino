@@ -24,6 +24,10 @@ static adc_channel_t adc_channels[ADC_CHANNELS_COUNT] = {ADC_CHANNEL_0, ADC_CHAN
 static adc_continuous_handle_t adc_handle = NULL;
 static esp_adc_cal_characteristics_t *adc_chars;
 
+// Simulation Mode
+volatile bool simulation_mode = false;
+float sim_phase = 0;
+
 // Trigger Configuration
 #define TRIGGER_PINS_COUNT 4
 uint8_t trigger_pins[] = {12, 13, 14, 27};
@@ -52,6 +56,10 @@ AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 Preferences preferences;
 
+// Stats
+volatile uint32_t packets_sent = 0;
+volatile uint32_t samples_processed = 0;
+
 // Interrupts
 void IRAM_ATTR handleTrigger0() {
   if (currentMode == MODE_INDEPENDENT) trigger_occurred[0] = true;
@@ -70,6 +78,9 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
     if (info->final && info->index == 0 && info->len == len) {
       if (len > 0 && data[0] == 'M') {
         currentMode = (data[1] == '1') ? MODE_CAM_WHEEL : MODE_INDEPENDENT;
+      } else if (len > 0 && data[0] == 'S') {
+        simulation_mode = (data[1] == '1');
+        Serial.printf("Simulation Mode: %s\n", simulation_mode ? "ON" : "OFF");
       } else if (len > 0 && data[0] == 'W') {
         String cmd = String((char*)data).substring(2);
         int sep = cmd.indexOf(';');
@@ -123,33 +134,63 @@ void scope_task(void *pv) {
   packet_ptr = (ScopePacket*)malloc(sizeof(ScopePacket));
 
   while (1) {
-    uint32_t out_len = 0;
-    esp_err_t ret = adc_continuous_read(adc_handle, read_raw, ADC_READ_BUF_BYTES, &out_len, ADC_READ_TIMEOUT_MS);
-    if (ret == ESP_OK && out_len > 0) {
-      size_t count = out_len / sizeof(adc_digi_output_data_t);
-      adc_digi_output_data_t *p = (adc_digi_output_data_t*)read_raw;
-      for (size_t i = 0; i < count; i++) {
-        uint32_t chan = p[i].type1.channel;
-        uint32_t val = p[i].type1.data & 0xFFF;
-        int chan_idx = -1;
-        for(int j=0; j<ADC_CHANNELS_COUNT; j++) if(adc_channels[j] == (adc_channel_t)chan) { chan_idx = j; break; }
-        if(chan_idx == -1) continue;
+    if (simulation_mode) {
+      // Simulation Loop
+      for (int i = 0; i < 64; i++) { // Process in small chunks to allow task yield
+        for (int ch = 0; ch < ADC_CHANNELS_COUNT; ch++) {
+          float val = 0;
+          if (ch == 0) val = 2048 + 1000 * sin(sim_phase);
+          else if (ch == 1) val = 2048 + 1000 * cos(sim_phase * 1.5);
+          else if (ch == 2) val = (fmod(sim_phase, 2.0 * PI) / (2.0 * PI)) * 4095;
+          else if (ch == 3) val = (sin(sim_phase * 5.0) > 0) ? 3500 : 500;
 
-        packet_ptr->data[sample_idx * ADC_CHANNELS_COUNT + chan_idx] = (uint16_t)val;
-        if (chan_idx == ADC_CHANNELS_COUNT - 1) {
-          sample_idx++;
-          if (sample_idx >= SAMPLES_PER_PACKET) {
-            packet_ptr->sequence = packet_seq++;
-            packet_ptr->timestamp = micros();
-            packet_ptr->trigger_flags = 0;
-            for (int t = 0; t < TRIGGER_PINS_COUNT; t++) if (trigger_occurred[t]) { packet_ptr->trigger_flags |= (1 << t); trigger_occurred[t] = false; }
-            ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
-            sample_idx = 0;
+          packet_ptr->data[sample_idx * ADC_CHANNELS_COUNT + ch] = (uint16_t)val;
+        }
+        sim_phase += 0.05;
+        sample_idx++;
+        if (sample_idx >= SAMPLES_PER_PACKET) {
+          packet_ptr->sequence = packet_seq++;
+          packet_ptr->timestamp = micros();
+          packet_ptr->trigger_flags = 0;
+          for (int t = 0; t < TRIGGER_PINS_COUNT; t++) if (trigger_occurred[t]) { packet_ptr->trigger_flags |= (1 << t); trigger_occurred[t] = false; }
+          ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
+          packets_sent++;
+          sample_idx = 0;
+        }
+      }
+      vTaskDelay(pdMS_TO_TICKS(5)); // Rate limit simulation
+    } else {
+      // Real ADC Loop
+      uint32_t out_len = 0;
+      esp_err_t ret = adc_continuous_read(adc_handle, read_raw, ADC_READ_BUF_BYTES, &out_len, ADC_READ_TIMEOUT_MS);
+      if (ret == ESP_OK && out_len > 0) {
+        size_t count = out_len / sizeof(adc_digi_output_data_t);
+        adc_digi_output_data_t *p = (adc_digi_output_data_t*)read_raw;
+        for (size_t i = 0; i < count; i++) {
+          uint32_t chan = p[i].type1.channel;
+          uint32_t val = p[i].type1.data & 0xFFF;
+          int chan_idx = -1;
+          for(int j=0; j<ADC_CHANNELS_COUNT; j++) if(adc_channels[j] == (adc_channel_t)chan) { chan_idx = j; break; }
+          if(chan_idx == -1) continue;
+
+          packet_ptr->data[sample_idx * ADC_CHANNELS_COUNT + chan_idx] = (uint16_t)val;
+          if (chan_idx == ADC_CHANNELS_COUNT - 1) {
+            sample_idx++;
+            samples_processed++;
+            if (sample_idx >= SAMPLES_PER_PACKET) {
+              packet_ptr->sequence = packet_seq++;
+              packet_ptr->timestamp = micros();
+              packet_ptr->trigger_flags = 0;
+              for (int t = 0; t < TRIGGER_PINS_COUNT; t++) if (trigger_occurred[t]) { packet_ptr->trigger_flags |= (1 << t); trigger_occurred[t] = false; }
+              ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
+              packets_sent++;
+              sample_idx = 0;
+            }
           }
         }
       }
+      vTaskDelay(1);
     }
-    vTaskDelay(1);
   }
 }
 
@@ -199,7 +240,10 @@ void setup() {
 
 void loop() {
   ws.cleanupClients();
-  static uint32_t last_hb = 0;
-  if(millis() - last_hb > 1000) { Serial.println("Heartbeat..."); last_hb = millis(); }
+  static uint32_t last_print = 0;
+  if(millis() - last_print > 1000) {
+    Serial.printf("Pkts: %u | Smpl: %u | Mode: %s\n", packets_sent, samples_processed, simulation_mode ? "SIM" : "REAL");
+    last_print = millis();
+  }
   delay(100);
 }
