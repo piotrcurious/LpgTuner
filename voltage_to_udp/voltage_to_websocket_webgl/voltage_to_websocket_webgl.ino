@@ -26,6 +26,7 @@ static esp_adc_cal_characteristics_t *adc_chars;
 
 // Simulation Mode
 volatile bool simulation_mode = false;
+volatile uint8_t sim_noise_level = 0; // 0-100
 float sim_phase = 0;
 
 // Trigger Configuration
@@ -90,6 +91,8 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
         currentMode = (data[1] == '1') ? MODE_CAM_WHEEL : MODE_INDEPENDENT;
       } else if (len > 0 && data[0] == 'S') {
         simulation_mode = (data[1] == '1');
+      } else if (len > 0 && data[0] == 'N') { // Noise command: N;value
+        sim_noise_level = atoi((char*)data + 2);
       } else if (len > 0 && data[0] == 'W') {
         String cmd = String((char*)data).substring(2);
         int sep = cmd.indexOf(';');
@@ -156,10 +159,14 @@ void scope_task(void *pv) {
           else if (ch == 1) val = 2048 + 1000 * cos(sim_phase * 1.5);
           else if (ch == 2) val = (fmod(sim_phase, 2.0 * PI) / (2.0 * PI)) * 4095;
           else if (ch == 3) val = (sin(sim_phase * 5.0) > 0) ? 3500 : 500;
-          packet_ptr->data[sample_idx * ADC_CHANNELS_COUNT + ch] = (uint16_t)val;
+
+          if (sim_noise_level > 0) {
+            val += (random(sim_noise_level * 10) - (sim_noise_level * 5));
+          }
+
+          packet_ptr->data[sample_idx * ADC_CHANNELS_COUNT + ch] = (uint16_t)constrain(val, 0, 4095);
         }
         sim_phase += 0.05;
-        // Simulated trigger every ~100 samples
         if (packet_seq % 10 == 0 && sample_idx == 0) trigger_occurred[0] = true;
 
         sample_idx++;
@@ -167,7 +174,7 @@ void scope_task(void *pv) {
           packet_ptr->sequence = packet_seq++;
           packet_ptr->timestamp = micros();
           packet_ptr->free_heap = ESP.getFreeHeap();
-          packet_ptr->trigger_flags = (currentMode == MODE_CAM_WHEEL) ? (1 << 7) : 0; // Bit 7: Cam Mode Active
+          packet_ptr->trigger_flags = (currentMode == MODE_CAM_WHEEL) ? (1 << 7) : 0;
           for (int t = 0; t < TRIGGER_PINS_COUNT; t++) if (trigger_occurred[t]) { packet_ptr->trigger_flags |= (1 << t); trigger_occurred[t] = false; }
           ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
           packets_sent++;
