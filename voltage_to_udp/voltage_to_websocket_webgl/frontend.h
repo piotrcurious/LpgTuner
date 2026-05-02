@@ -24,6 +24,7 @@ const char* html_index = R"rawliteral(
     .val-display { float: right; color: #0f0; }
     .status-bit { font-size: 10px; color: #f0f; font-weight: bold; margin-left: 10px; }
     .loss-critical { color: #f00; text-shadow: 0 0 5px #f00; }
+    #reconnect-btn { background: #600; border-color: #f00; margin-top: 10px; display: none; }
   </style>
 </head>
 <body>
@@ -56,6 +57,8 @@ const char* html_index = R"rawliteral(
       <input style="background:#111;color:#0f0;border:1px solid #444;width:80px;font-size:10px;" type="password" id="pass" placeholder="PASS">
       <button class="btn" onclick="saveWifi()">REBOOT</button>
     </div>
+
+    <button id="reconnect-btn" class="btn" onclick="connect()">FORCE RECONNECT</button>
   </div>
   <div class="stat-overlay" id="stats">
     LINK: DOWN | FPS: 0 | SEQ: 0<br>
@@ -83,8 +86,15 @@ const char* html_index = R"rawliteral(
 
   <script>
     const canvas = document.getElementById('canvas');
-    const gl = canvas.getContext('webgl', { antialias: true });
+    let gl;
+    try {
+      gl = canvas.getContext('webgl', { antialias: true });
+    } catch(e) {
+      alert("WebGL not supported");
+    }
+
     let ws, simOn = false, lastSeq = -1, lossCount = 0, startTime = Date.now();
+    let reconnectTimeout;
 
     function createShader(gl, type, source) {
       const s = gl.createShader(type);
@@ -246,11 +256,23 @@ const char* html_index = R"rawliteral(
     let pktCount = 0, lastTime = performance.now(), fps = 0;
 
     function connect() {
+      if(ws) ws.close();
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(protocol + '//' + location.host + '/ws');
       ws.binaryType = 'arraybuffer';
-      ws.onopen = () => { document.getElementById('stats').innerText = 'LINK: UP'; };
-      ws.onclose = () => { document.getElementById('stats').innerText = 'LINK: DOWN'; setTimeout(connect, 2000); };
+
+      ws.onopen = () => {
+        document.getElementById('stats').innerText = 'LINK: UP';
+        document.getElementById('reconnect-btn').style.display = 'none';
+        if(reconnectTimeout) clearTimeout(reconnectTimeout);
+      };
+
+      ws.onclose = () => {
+        document.getElementById('stats').innerText = 'LINK: DOWN';
+        document.getElementById('reconnect-btn').style.display = 'block';
+        reconnectTimeout = setTimeout(connect, 5000);
+      };
+
       ws.onmessage = (e) => {
         if (typeof e.data === 'string') return;
         const view = new DataView(e.data);
@@ -272,8 +294,7 @@ const char* html_index = R"rawliteral(
           const lossClass = (lossCount > 100) ? "loss-critical" : "";
           document.getElementById('stats').innerHTML = `
             LINK: UP | FPS: ${fps} | SEQ: ${seq}<br>
-            HEAP: ${heap} | <span class="${lossClass}">LOSS: ${lossCount}</span> | UP: ${Math.floor((Date.now()-startTime)/1000)}s<br>
-            CLIENTS: 1
+            HEAP: ${heap} | <span class="${lossClass}">LOSS: ${lossCount}</span> | UP: ${Math.floor((Date.now()-startTime)/1000)}s
           `;
           document.getElementById('mode-bit').innerText = (trig & (1 << 7)) ? "[CAM MODE]" : "";
         }
