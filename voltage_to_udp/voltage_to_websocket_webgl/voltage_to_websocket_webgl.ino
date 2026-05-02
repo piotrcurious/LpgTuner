@@ -60,9 +60,8 @@ AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 Preferences preferences;
 
-// Stats
-volatile uint32_t packets_sent = 0;
-volatile uint32_t samples_processed = 0;
+// Multi-core safe access
+portMUX_TYPE trigger_mux = portMUX_INITIALIZER_UNLOCKED;
 
 // Interrupts
 void IRAM_ATTR handleTrigger(int idx) {
@@ -70,12 +69,14 @@ void IRAM_ATTR handleTrigger(int idx) {
   if (now - last_trigger_event_time[idx] < TRIGGER_HOLDOFF_MS) return;
   last_trigger_event_time[idx] = now;
 
+  portENTER_CRITICAL_ISR(&trigger_mux);
   if (idx == 0 && currentMode == MODE_CAM_WHEEL) {
     trigger_occurred[cam_wheel_target] = true;
     cam_wheel_target = (cam_wheel_target + 1) % ADC_CHANNELS_COUNT;
   } else if (currentMode == MODE_INDEPENDENT) {
     trigger_occurred[idx] = true;
   }
+  portEXIT_CRITICAL_ISR(&trigger_mux);
 }
 
 void IRAM_ATTR handleTrigger0() { handleTrigger(0); }
@@ -91,7 +92,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
         currentMode = (data[1] == '1') ? MODE_CAM_WHEEL : MODE_INDEPENDENT;
       } else if (len > 0 && data[0] == 'S') {
         simulation_mode = (data[1] == '1');
-      } else if (len > 0 && data[0] == 'N') { // Noise command: N;value
+      } else if (len > 0 && data[0] == 'N') {
         sim_noise_level = atoi((char*)data + 2);
       } else if (len > 0 && data[0] == 'W') {
         String cmd = String((char*)data).substring(2);
@@ -159,11 +160,7 @@ void scope_task(void *pv) {
           else if (ch == 1) val = 2048 + 1000 * cos(sim_phase * 1.5);
           else if (ch == 2) val = (fmod(sim_phase, 2.0 * PI) / (2.0 * PI)) * 4095;
           else if (ch == 3) val = (sin(sim_phase * 5.0) > 0) ? 3500 : 500;
-
-          if (sim_noise_level > 0) {
-            val += (random(sim_noise_level * 10) - (sim_noise_level * 5));
-          }
-
+          if (sim_noise_level > 0) val += (random(sim_noise_level * 10) - (sim_noise_level * 5));
           packet_ptr->data[sample_idx * ADC_CHANNELS_COUNT + ch] = (uint16_t)constrain(val, 0, 4095);
         }
         sim_phase += 0.05;
@@ -175,9 +172,12 @@ void scope_task(void *pv) {
           packet_ptr->timestamp = micros();
           packet_ptr->free_heap = ESP.getFreeHeap();
           packet_ptr->trigger_flags = (currentMode == MODE_CAM_WHEEL) ? (1 << 7) : 0;
+
+          portENTER_CRITICAL(&trigger_mux);
           for (int t = 0; t < TRIGGER_PINS_COUNT; t++) if (trigger_occurred[t]) { packet_ptr->trigger_flags |= (1 << t); trigger_occurred[t] = false; }
+          portEXIT_CRITICAL(&trigger_mux);
+
           ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
-          packets_sent++;
           sample_idx = 0;
         }
       }
@@ -194,19 +194,20 @@ void scope_task(void *pv) {
           int chan_idx = -1;
           for(int j=0; j<ADC_CHANNELS_COUNT; j++) if(adc_channels[j] == (adc_channel_t)chan) { chan_idx = j; break; }
           if(chan_idx == -1) continue;
-
           packet_ptr->data[sample_idx * ADC_CHANNELS_COUNT + chan_idx] = (uint16_t)val;
           if (chan_idx == ADC_CHANNELS_COUNT - 1) {
             sample_idx++;
-            samples_processed++;
             if (sample_idx >= SAMPLES_PER_PACKET) {
               packet_ptr->sequence = packet_seq++;
               packet_ptr->timestamp = micros();
               packet_ptr->free_heap = ESP.getFreeHeap();
               packet_ptr->trigger_flags = (currentMode == MODE_CAM_WHEEL) ? (1 << 7) : 0;
+
+              portENTER_CRITICAL(&trigger_mux);
               for (int t = 0; t < TRIGGER_PINS_COUNT; t++) if (trigger_occurred[t]) { packet_ptr->trigger_flags |= (1 << t); trigger_occurred[t] = false; }
+              portEXIT_CRITICAL(&trigger_mux);
+
               ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
-              packets_sent++;
               sample_idx = 0;
             }
           }
