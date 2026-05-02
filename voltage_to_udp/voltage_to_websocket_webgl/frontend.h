@@ -5,7 +5,7 @@ const char* html_index = R"rawliteral(
   <title>PRO AUTO SCOPE</title>
   <style>
     body { background: #000; color: #0f0; font-family: 'Consolas', 'Courier New', monospace; margin: 0; overflow: hidden; }
-    #ui { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(20,20,20,0.8); padding: 15px; border: 1px solid #444; border-radius: 4px; box-shadow: 0 0 10px rgba(0,255,0,0.2); pointer-events: auto; max-height: 90vh; overflow-y: auto; }
+    #ui { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(20,20,20,0.8); padding: 15px; border: 1px solid #444; border-radius: 4px; box-shadow: 0 0 10px rgba(0,255,0,0.2); pointer-events: auto; max-height: 90vh; overflow-y: auto; width: 220px; }
     canvas { width: 100vw; height: 100vh; display: block; position: absolute; top: 0; left: 0; }
     .chan { margin-bottom: 8px; font-size: 14px; }
     .chan-row { display: flex; align-items: center; margin-bottom: 5px; }
@@ -23,6 +23,7 @@ const char* html_index = R"rawliteral(
     input[type=range] { width: 100%; height: 4px; margin-bottom: 8px; accent-color: #0f0; }
     .val-display { float: right; color: #0f0; }
     .status-bit { font-size: 10px; color: #f0f; font-weight: bold; margin-left: 10px; }
+    .loss-critical { color: #f00; text-shadow: 0 0 5px #f00; }
   </style>
 </head>
 <body>
@@ -45,6 +46,8 @@ const char* html_index = R"rawliteral(
     <div class="ctrl-group">
       <div style="margin-bottom: 5px; font-size: 10px; color: #888;">DEBUG / SIMULATION</div>
       <button id="btnSim" class="btn" onclick="toggleSim()">SIMULATION: OFF</button>
+      <label>NOISE LEVEL <span class="val-display" id="val-noise">0</span></label>
+      <input type="range" id="ctrl-noise" min="0" max="100" step="1" value="0" oninput="updateNoise()">
     </div>
 
     <div class="ctrl-group">
@@ -56,7 +59,8 @@ const char* html_index = R"rawliteral(
   </div>
   <div class="stat-overlay" id="stats">
     LINK: DOWN | FPS: 0 | SEQ: 0<br>
-    HEAP: 0 | LOSS: 0 | UP: 0s
+    HEAP: 0 | LOSS: 0 | UP: 0s<br>
+    CLIENTS: 0
   </div>
 
   <script id="vs" type="x-shader/x-vertex">
@@ -146,6 +150,12 @@ const char* html_index = R"rawliteral(
         document.getElementById('val-o'+i).innerText = chanSettings[i].offset.toFixed(2);
       }
       document.getElementById('val-tb').innerText = document.getElementById('ctrl-tb').value;
+    }
+
+    function updateNoise() {
+      const n = document.getElementById('ctrl-noise').value;
+      document.getElementById('val-noise').innerText = n;
+      if(ws && ws.readyState === WebSocket.OPEN) ws.send('N' + n);
     }
 
     const gridBuffer = gl.createBuffer();
@@ -259,9 +269,11 @@ const char* html_index = R"rawliteral(
         const now = performance.now();
         if(now - lastTime > 1000) {
           fps = pktCount; pktCount = 0; lastTime = now;
+          const lossClass = (lossCount > 100) ? "loss-critical" : "";
           document.getElementById('stats').innerHTML = `
             LINK: UP | FPS: ${fps} | SEQ: ${seq}<br>
-            HEAP: ${heap} | LOSS: ${lossCount} | UP: ${Math.floor((Date.now()-startTime)/1000)}s
+            HEAP: ${heap} | <span class="${lossClass}">LOSS: ${lossCount}</span> | UP: ${Math.floor((Date.now()-startTime)/1000)}s<br>
+            CLIENTS: 1
           `;
           document.getElementById('mode-bit').innerText = (trig & (1 << 7)) ? "[CAM MODE]" : "";
         }
