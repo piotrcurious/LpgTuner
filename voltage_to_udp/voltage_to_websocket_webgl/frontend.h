@@ -14,7 +14,7 @@ const char* html_index = R"rawliteral(
     .btn { background: #333; color: #eee; border: 1px solid #666; padding: 4px 8px; cursor: pointer; margin-right: 5px; font-family: inherit; font-size: 11px; }
     .btn:hover { background: #555; }
     .btn.active { background: #006600; border-color: #00ff00; }
-    .stat-overlay { position: absolute; bottom: 10px; right: 15px; color: #008800; font-size: 12px; text-shadow: 1px 1px #000; pointer-events: none; }
+    .stat-overlay { position: absolute; bottom: 10px; right: 15px; color: #008800; font-size: 12px; text-shadow: 1px 1px #000; pointer-events: none; text-align: right; }
     .trigger-indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #333; margin-left: 5px; }
     .trigger-active { background: #f00; box-shadow: 0 0 5px #f00; }
     h2 { margin: 0 0 10px 0; font-size: 14px; color: #aaa; border-bottom: 1px solid #333; padding-bottom: 5px; }
@@ -22,12 +22,13 @@ const char* html_index = R"rawliteral(
     label { font-size: 10px; color: #888; display: block; margin-bottom: 2px; }
     input[type=range] { width: 100%; height: 4px; margin-bottom: 8px; accent-color: #0f0; }
     .val-display { float: right; color: #0f0; }
+    .status-bit { font-size: 10px; color: #f0f; font-weight: bold; margin-left: 10px; }
   </style>
 </head>
 <body>
   <canvas id="canvas"></canvas>
   <div id="ui">
-    <h2>ENGINE ANALYZER</h2>
+    <h2>ENGINE ANALYZER <span id="mode-bit" class="status-bit"></span></h2>
     <div id="chan-controls"></div>
 
     <div class="ctrl-group">
@@ -53,7 +54,10 @@ const char* html_index = R"rawliteral(
       <button class="btn" onclick="saveWifi()">REBOOT</button>
     </div>
   </div>
-  <div class="stat-overlay" id="stats">LINK: DOWN | FPS: 0</div>
+  <div class="stat-overlay" id="stats">
+    LINK: DOWN | FPS: 0 | SEQ: 0<br>
+    HEAP: 0 | LOSS: 0 | UP: 0s
+  </div>
 
   <script id="vs" type="x-shader/x-vertex">
     attribute float a_y;
@@ -76,8 +80,7 @@ const char* html_index = R"rawliteral(
   <script>
     const canvas = document.getElementById('canvas');
     const gl = canvas.getContext('webgl', { antialias: true });
-    let ws;
-    let simOn = false;
+    let ws, simOn = false, lastSeq = -1, lossCount = 0, startTime = Date.now();
 
     function createShader(gl, type, source) {
       const s = gl.createShader(type);
@@ -243,13 +246,25 @@ const char* html_index = R"rawliteral(
         const view = new DataView(e.data);
         const seq = view.getUint32(0, true);
         const trig = view.getUint8(8);
-        const data = new Uint16Array(e.data, 9, SAMPLES * CHANNELS);
+        const heap = view.getUint32(9, true);
+        const data = new Uint16Array(e.data, 13, SAMPLES * CHANNELS);
+
+        if(lastSeq !== -1 && seq !== lastSeq + 1) lossCount += (seq - lastSeq - 1);
+        lastSeq = seq;
+
         history.push({seq, trig, data});
         if(history.length > PHOSPHOR_COUNT) history.shift();
+
         pktCount++;
         const now = performance.now();
-        if(now - lastTime > 1000) { fps = pktCount; pktCount = 0; lastTime = now; }
-        document.getElementById('stats').innerText = `LINK: UP | FPS: ${fps} | SEQ: ${seq}`;
+        if(now - lastTime > 1000) {
+          fps = pktCount; pktCount = 0; lastTime = now;
+          document.getElementById('stats').innerHTML = `
+            LINK: UP | FPS: ${fps} | SEQ: ${seq}<br>
+            HEAP: ${heap} | LOSS: ${lossCount} | UP: ${Math.floor((Date.now()-startTime)/1000)}s
+          `;
+          document.getElementById('mode-bit').innerText = (trig & (1 << 7)) ? "[CAM MODE]" : "";
+        }
         requestAnimationFrame(render);
       };
     }
