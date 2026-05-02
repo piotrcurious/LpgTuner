@@ -46,7 +46,7 @@ volatile uint8_t cam_wheel_target = 0;
 struct ScopePacket {
   uint32_t sequence;
   uint32_t timestamp;
-  uint8_t trigger_flags;
+  uint16_t trigger_flags; // Aligned to 2 bytes
   uint32_t free_heap;
   uint16_t data[SAMPLES_PER_PACKET * ADC_CHANNELS_COUNT];
 };

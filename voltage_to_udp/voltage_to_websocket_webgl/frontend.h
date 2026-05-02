@@ -1,3 +1,6 @@
+#ifndef FRONTEND_H
+#define FRONTEND_H
+
 const char* html_index = R"rawliteral(
 <!DOCTYPE HTML>
 <html>
@@ -277,9 +280,9 @@ const char* html_index = R"rawliteral(
         if (typeof e.data === 'string') return;
         const view = new DataView(e.data);
         const seq = view.getUint32(0, true);
-        const trig = view.getUint8(8);
-        const heap = view.getUint32(9, true);
-        const data = new Uint16Array(e.data, 13, SAMPLES * CHANNELS);
+        const trig = view.getUint16(8, true); // Match V2 struct offset 8
+        const heap = view.getUint32(10, true); // Match V2 struct offset 10
+        const data = new Uint16Array(e.data, 14, SAMPLES * CHANNELS); // Match V2 struct offset 14
 
         if(lastSeq !== -1 && seq !== lastSeq + 1) lossCount += (seq - lastSeq - 1);
         lastSeq = seq;
@@ -333,3 +336,5 @@ const char* html_index = R"rawliteral(
 </body>
 </html>
 )rawliteral";
+
+#endif
