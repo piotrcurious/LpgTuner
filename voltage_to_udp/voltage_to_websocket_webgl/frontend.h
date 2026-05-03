@@ -76,6 +76,16 @@ const char* html_index = R"rawliteral(
         <button id="btnEdgeR" class="btn active" onclick="setEdge(1)">RISE</button>
         <button id="btnEdgeF" class="btn" onclick="setEdge(0)">FALL</button>
       </div>
+      <div id="cam-config" style="display:none; background:rgba(0,0,0,0.3); padding:5px; border:1px solid #444; margin-bottom:5px;">
+        <label>PULSE DIVIDER <span class="val-display" id="val-div">1</span></label>
+        <input type="range" id="ctrl-div" min="1" max="60" value="1" oninput="updateCamConfig()">
+        <label>SYNC MODE</label>
+        <select id="ctrl-sync" class="btn" onchange="updateCamConfig()" style="width:100%; font-size:10px; height:22px; background:#222; border:1px solid #444; color:#0f0;">
+          <option value="0">NONE</option>
+          <option value="1">MISSING TOOTH</option>
+          <option value="2">EXTERNAL PIN (D13)</option>
+        </select>
+      </div>
       <div style="margin-bottom:5px;">
         <label>ANALOG SRC</label>
         <select id="analogCh" class="btn" onchange="updateAnalogTrig()" style="width:100%; font-size:10px; height:22px; background:#222; border:1px solid #444; color:#0f0;">
@@ -198,6 +208,9 @@ const char* html_index = R"rawliteral(
     let triggerPos = 10; // %
     let analogTrigCh = -1;
     let analogTrigLevel = 2048;
+
+    let metricsEMA = Array.from({length: CHANNELS}, () => ({ pp: 0, rms: 0 }));
+    const EMA_ALPHA = 0.2;
 
     let history = [];
     const xCoords = new Float32Array(SAMPLES);
@@ -437,11 +450,11 @@ const char* html_index = R"rawliteral(
         if (mathOp !== 'none') {
            const mathData = new Float32Array(SAMPLES);
            for(let i=0; i<SAMPLES; i++) {
-              const v1 = entry.data[i * CHANNELS + 0];
-              const v2 = entry.data[i * CHANNELS + 1];
+              const v1 = entry.data[i * CHANNELS + 0]; // mV
+              const v2 = entry.data[i * CHANNELS + 1]; // mV
               if (mathOp === 'add') mathData[i] = (v1 + v2) / 2;
-              else if (mathOp === 'sub') mathData[i] = (v1 - v2) + 2048;
-              else if (mathOp === 'mul') mathData[i] = (v1 * v2) / 4095;
+              else if (mathOp === 'sub') mathData[i] = (v1 - v2) + 1650;
+              else if (mathOp === 'mul') mathData[i] = (v1 * v2) / 3300.0;
            }
            const mathBuf = gl.createBuffer();
            gl.bindBuffer(gl.ARRAY_BUFFER, mathBuf);
@@ -467,12 +480,18 @@ const char* html_index = R"rawliteral(
               if(val < min) min = val;
               if(val > max) max = val;
               const v = val / 1000.0;
-              sum += v;
               sumSq += v*v;
             }
+
+            const pp = (max - min) / 1000.0;
+            const rms = Math.sqrt(sumSq / SAMPLES);
+
+            metricsEMA[c].pp = metricsEMA[c].pp * (1 - EMA_ALPHA) + pp * EMA_ALPHA;
+            metricsEMA[c].rms = metricsEMA[c].rms * (1 - EMA_ALPHA) + rms * EMA_ALPHA;
+
             document.getElementById('v'+c).innerText = (entry.data[0 * CHANNELS + c] / 1000.0).toFixed(2);
-            document.getElementById('pp'+c).innerText = ((max - min) / 1000.0).toFixed(2);
-            document.getElementById('rms'+c).innerText = Math.sqrt(sumSq / SAMPLES).toFixed(2);
+            document.getElementById('pp'+c).innerText = metricsEMA[c].pp.toFixed(2);
+            document.getElementById('rms'+c).innerText = metricsEMA[c].rms.toFixed(2);
 
             const tInd = document.getElementById('t'+c);
             if (entry.trig & (1 << c)) {
@@ -589,6 +608,17 @@ const char* html_index = R"rawliteral(
         ws.send('M' + m);
         document.getElementById('btnType0').classList.toggle('active', m === 0);
         document.getElementById('btnType1').classList.toggle('active', m === 1);
+        document.getElementById('cam-config').style.display = (m === 1) ? 'block' : 'none';
+      }
+    }
+
+    function updateCamConfig() {
+      const div = document.getElementById('ctrl-div').value;
+      const sync = document.getElementById('ctrl-sync').value;
+      document.getElementById('val-div').innerText = div;
+      if(ws && ws.readyState === WebSocket.OPEN) {
+        ws.send('V' + div);
+        ws.send('Y' + sync);
       }
     }
 
