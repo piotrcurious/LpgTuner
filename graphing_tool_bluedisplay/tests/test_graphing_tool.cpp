@@ -5,6 +5,20 @@
 
 #include "../graphing_tool_bluedisplay.ino"
 
+// Global flags to track library calls
+bool drawPixelCalled = false;
+bool drawTextCalled = false;
+
+// Override BlueDisplay methods for testing
+void BlueDisplay::drawPixel(uint16_t x, uint16_t y, uint16_t color) {
+    drawPixelCalled = true;
+}
+
+uint16_t BlueDisplay::drawText(uint16_t x, uint16_t y, const char* text, uint16_t size, uint16_t color, uint16_t bgColor) {
+    drawTextCalled = true;
+    return 0;
+}
+
 void test_sensor_readings() {
     std::cout << "Testing sensor readings..." << std::endl;
     mock_arduino_init();
@@ -69,9 +83,56 @@ void test_timeouts() {
     assert(pulseWidthMs == 0);
 }
 
+void test_throttling() {
+    std::cout << "Testing throttling..." << std::endl;
+    mock_arduino_init();
+    lastDrawTime = 0;
+    lastTextUpdateTime = 0;
+    lastDrawnRpm = -1;
+    lastDrawnLoad = -1;
+
+    // Set engine state
+    rpm = 3000;
+    engineLoad = 50;
+    pulseWidthMs = 5.0;
+    lambda = 1.0;
+
+    // First call should trigger draw
+    drawPixelCalled = false;
+    drawTextCalled = false;
+    set_millis(200); // Set to 200ms to satisfy drawCurrentPulseWidth throttling
+    drawChart();
+    drawCurrentPulseWidth();
+    assert(drawPixelCalled == true);
+    assert(drawTextCalled == true);
+
+    // Immediate second call should NOT trigger draw
+    drawPixelCalled = false;
+    drawTextCalled = false;
+    set_millis(210);
+    drawChart();
+    drawCurrentPulseWidth();
+    assert(drawPixelCalled == false);
+    assert(drawTextCalled == false);
+
+    // Significant change in RPM should trigger drawChart even before 50ms
+    rpm = 3100;
+    drawPixelCalled = false;
+    set_millis(30);
+    drawChart();
+    assert(drawPixelCalled == true);
+
+    // After 200ms from the first draw (at 200ms), i.e., at 401ms, drawText should trigger again
+    drawTextCalled = false;
+    set_millis(401);
+    drawCurrentPulseWidth();
+    assert(drawTextCalled == true);
+}
+
 int main() {
     test_sensor_readings();
     test_timeouts();
+    test_throttling();
     std::cout << "All tests passed!" << std::endl;
     return 0;
 }

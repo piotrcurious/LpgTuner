@@ -3,6 +3,8 @@
 
 #ifndef UNIT_TEST
 #include "BlueDisplay.hpp"
+#else
+#include "tests/mock_arduino.h"
 #endif
 
 // Constants
@@ -28,6 +30,7 @@ float pulseWidthMs = 0;
 float lastDrawnRpm = -1;
 float lastDrawnLoad = -1;
 unsigned long lastDrawTime = 0;
+unsigned long lastTextUpdateTime = 0;
 
 volatile unsigned long lastCamTime = 0;
 volatile unsigned long camPeriod = 0;
@@ -44,12 +47,10 @@ int chartWidth, chartHeight, chartXOffset, chartYOffset;
 #define COLOR_BLUE 0x001F
 #define COLOR_GREEN 0x07E0
 
-#ifndef UNIT_TEST
 BDButton clearButton;
 void initDisplay();
 void drawGui();
 void handleClear(BDButton *aButton, int16_t aValue);
-#endif
 
 void camISR() {
     unsigned long now = micros();
@@ -96,7 +97,6 @@ void readSensors() {
     pulseWidthMs = pulseWidthUs / 1000.0;
 }
 
-#ifndef UNIT_TEST
 void drawChart() {
     if (rpm == 0 || engineLoad == 0) return;
 
@@ -112,6 +112,22 @@ void drawChart() {
     lastDrawnRpm = rpm;
     lastDrawnLoad = engineLoad;
 
+#ifdef UNIT_TEST
+    int x = arduino_map(arduino_constrain(rpm, 0, MAX_RPM), 0, MAX_RPM, chartXOffset, chartXOffset + chartWidth);
+    int y = arduino_map(arduino_constrain(engineLoad, 0, 100), 0, 100, chartYOffset + chartHeight, chartYOffset);
+
+    // Color mapping: Blue (short) -> Green (mid) -> Red (long)
+    uint16_t color;
+    if (pulseWidthMs < (MAX_PW / 2.0)) {
+        int g = arduino_map(pulseWidthMs * 100, 0, (MAX_PW / 2.0) * 100, 0, 63);
+        int b = 31 - arduino_map(pulseWidthMs * 100, 0, (MAX_PW / 2.0) * 100, 0, 31);
+        color = (g << 5) | b;
+    } else {
+        int r = arduino_map((pulseWidthMs - MAX_PW / 2.0) * 100, 0, (MAX_PW / 2.0) * 100, 0, 31);
+        int g = 63 - arduino_map((pulseWidthMs - MAX_PW / 2.0) * 100, 0, (MAX_PW / 2.0) * 100, 0, 63);
+        color = (r << 11) | (g << 5);
+    }
+#else
     int x = map(constrain(rpm, 0, MAX_RPM), 0, MAX_RPM, chartXOffset, chartXOffset + chartWidth);
     int y = map(constrain(engineLoad, 0, 100), 0, 100, chartYOffset + chartHeight, chartYOffset);
 
@@ -126,6 +142,7 @@ void drawChart() {
         int g = 63 - map((pulseWidthMs - MAX_PW / 2.0) * 100, 0, (MAX_PW / 2.0) * 100, 0, 63);
         color = (r << 11) | (g << 5);
     }
+#endif
 
     BlueDisplay1.drawPixel(x, y, color);
     // Draw a small 2x2 square for better visibility
@@ -135,14 +152,21 @@ void drawChart() {
 }
 
 void drawCurrentPulseWidth() {
-    char buf[48];
+    unsigned long now = millis();
+    if (now - lastTextUpdateTime < 200) return;
+    lastTextUpdateTime = now;
+
+    char buf[64];
     char pwBuf[10];
+    char lambdaBuf[10];
 #ifdef UNIT_TEST
     sprintf(pwBuf, "%.2f", pulseWidthMs);
+    sprintf(lambdaBuf, "%.2f", lambda);
 #else
     dtostrf(pulseWidthMs, 4, 2, pwBuf);
+    dtostrf(lambda, 4, 2, lambdaBuf);
 #endif
-    sprintf(buf, "RPM: %d  PW: %s ms  ", (int)rpm, pwBuf);
+    sprintf(buf, "RPM: %d  PW: %s ms  L: %s  ", (int)rpm, pwBuf, lambdaBuf);
     BlueDisplay1.drawText(10, displayHeight - 20, buf, TEXT_SIZE_11, COLOR_BLACK, COLOR_WHITE);
 }
 
@@ -152,7 +176,7 @@ void setup() {
     pinMode(injectorPin, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(camPin), camISR, RISING);
     attachInterrupt(digitalPinToInterrupt(injectorPin), injectorISR, CHANGE);
-    BlueDisplay1.initCommunication(&Serial, &initDisplay, &drawGui);
+    BlueDisplay1.initCommunication(&Serial, &initDisplay, &drawGui, NULL);
 }
 
 void loop() {
@@ -161,7 +185,11 @@ void loop() {
     drawChart();
     drawCurrentPulseWidth();
     // Update analog gauge
+#ifdef UNIT_TEST
+    int gaugeValue = arduino_constrain(pulseWidthMs * (255.0 / MAX_PW), 0, 255);
+#else
     int gaugeValue = constrain(pulseWidthMs * (255.0 / MAX_PW), 0, 255);
+#endif
     analogWrite(injectorGaugePin, gaugeValue);
 }
 
@@ -179,7 +207,7 @@ void initDisplay() {
 void drawGui() {
     BlueDisplay1.clearDisplay(COLOR_WHITE);
     BlueDisplay1.drawText(10, 5, "Injector Map", TEXT_SIZE_11, COLOR_BLACK, COLOR_WHITE);
-    BlueDisplay1.drawRect(chartXOffset, chartYOffset, chartWidth + 1, chartHeight + 1, COLOR_BLACK);
+    BlueDisplay1.drawRectRel(chartXOffset, chartYOffset, chartWidth, chartHeight, COLOR_BLACK);
 
     // Draw Axis Labels
     BlueDisplay1.drawText(chartXOffset + chartWidth / 2 - 20, chartYOffset + chartHeight + 5, "RPM", TEXT_SIZE_09, COLOR_BLACK, COLOR_WHITE);
@@ -194,4 +222,3 @@ void drawGui() {
 void handleClear(BDButton *aButton, int16_t aValue) {
     drawGui();
 }
-#endif
