@@ -29,14 +29,21 @@ const char* html_index = R"rawliteral(
     input[type=range] { width: 100%; height: 4px; margin-bottom: 8px; accent-color: #0f0; }
     .val-display { float: right; color: #0f0; }
     .status-bit { font-size: 10px; color: #f0f; font-weight: bold; margin-left: 10px; }
+    .trig-status { font-size: 11px; color: #fff; background: #440; padding: 2px 5px; border-radius: 2px; margin-left: 10px; }
+    .trig-active { background: #080; }
+    .trig-level-label { position: absolute; right: 0; color: #f00; font-size: 10px; background: rgba(0,0,0,0.6); padding: 1px 3px; pointer-events: none; border: 1px solid #600; display: none; z-index: 5; }
+    .trig-pos-marker { position: absolute; top: 0; width: 1px; height: 100%; background: rgba(255,0,0,0.3); pointer-events: none; z-index: 2; }
+    .trig-pos-marker::after { content: 'T'; color: #f00; font-size: 10px; position: absolute; top: 2px; left: 2px; }
     .loss-critical { color: #f00; text-shadow: 0 0 5px #f00; }
     #reconnect-btn { background: #600; border-color: #f00; margin-top: 10px; display: none; }
   </style>
 </head>
 <body>
   <canvas id="canvas"></canvas>
+  <div id="trig-pos-marker" class="trig-pos-marker"></div>
+  <div id="trig-level-label" class="trig-level-label">T: 1.65V</div>
   <div id="ui">
-    <h2>ENGINE ANALYZER <span id="mode-bit" class="status-bit"></span></h2>
+    <h2>ENGINE ANALYZER <span id="trig-state" class="trig-status">WAITING</span><span id="mode-bit" class="status-bit"></span></h2>
     <div id="chan-controls"></div>
 
     <div class="ctrl-group">
@@ -147,7 +154,8 @@ const char* html_index = R"rawliteral(
     uniform float u_scale;
     uniform float u_tb;
     void main() {
-      gl_Position = vec4(a_x * u_tb, (a_y / 4095.0 * 2.0 - 1.0) * u_scale + u_offset, 0.0, 1.0);
+      // a_y is now in millivolts (0-3300)
+      gl_Position = vec4(a_x * u_tb, (a_y / 3300.0 * 2.0 - 1.0) * u_scale + u_offset, 0.0, 1.0);
     }
   </script>
   <script id="fs" type="x-shader/x-fragment">
@@ -259,21 +267,26 @@ const char* html_index = R"rawliteral(
     function createGrid() {
       const gridPoints = [];
       for(let i=-10; i<=10; i++) {
-        gridPoints.push(-1, (i/10 + 1)*2048, 1, (i/10 + 1)*2048);
-        gridPoints.push(i/10, 0, i/10, 4095);
+        gridPoints.push(-1, (i/10 + 1)*1650, 1, (i/10 + 1)*1650);
+        gridPoints.push(i/10, 0, i/10, 3300);
       }
       gl.bindBuffer(gl.ARRAY_BUFFER, gridBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(gridPoints), gl.STATIC_DRAW);
     }
 
     function drawTriggerLine() {
-      if (analogTrigCh < 0) return;
+      const label = document.getElementById('trig-level-label');
+      if (analogTrigCh < 0) {
+        label.style.display = 'none';
+        return;
+      }
       gl.uniform1f(gl.getUniformLocation(program, 'u_offset'), chanSettings[analogTrigCh].offset);
       gl.uniform1f(gl.getUniformLocation(program, 'u_scale'), chanSettings[analogTrigCh].scale);
       gl.uniform1f(gl.getUniformLocation(program, 'u_tb'), 1);
       gl.uniform4f(gl.getUniformLocation(program, 'u_color'), 1, 0, 0, 0.4);
 
-      const pts = new Float32Array([-1, analogTrigLevel, 1, analogTrigLevel]);
+      const mv = (analogTrigLevel / 4095.0) * 3300.0;
+      const pts = new Float32Array([-1, mv, 1, mv]);
       const b = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, b);
       gl.bufferData(gl.ARRAY_BUFFER, pts, gl.STREAM_DRAW);
@@ -281,6 +294,13 @@ const char* html_index = R"rawliteral(
       gl.vertexAttribPointer(gl.getAttribLocation(program, 'a_y'), 1, gl.FLOAT, false, 8, 4);
       gl.drawArrays(gl.LINES, 0, 2);
       gl.deleteBuffer(b);
+
+      // Update Label
+      const normY = ((mv / 3300.0 * 2.0 - 1.0) * chanSettings[analogTrigCh].scale + chanSettings[analogTrigCh].offset);
+      const canvasY = (1.0 - (normY + 1.0) / 2.0) * canvas.height;
+      label.style.display = 'block';
+      label.style.top = canvasY + 'px';
+      label.innerText = 'T: ' + (analogTrigLevel * 3.3 / 4095).toFixed(2) + 'V';
     }
 
     function drawGrid() {
@@ -347,7 +367,7 @@ const char* html_index = R"rawliteral(
 
       // Horizontal cursors
       cursorY.forEach(y => {
-        const pts = new Float32Array([-1, y*4095, 1, y*4095]);
+        const pts = new Float32Array([-1, y*3300, 1, y*3300]);
         const b = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, b);
         gl.bufferData(gl.ARRAY_BUFFER, pts, gl.STREAM_DRAW);
@@ -441,17 +461,17 @@ const char* html_index = R"rawliteral(
 
         for (let c = 0; c < CHANNELS; c++) {
           if (h === history.length - 1) {
-            let min = 4095, max = 0, sum = 0, sumSq = 0;
+            let min = 3300, max = 0, sum = 0, sumSq = 0;
             for(let i=0; i<SAMPLES; i++) {
               const val = entry.data[i * CHANNELS + c];
               if(val < min) min = val;
               if(val > max) max = val;
-              const v = val * 3.3 / 4095;
+              const v = val / 1000.0;
               sum += v;
               sumSq += v*v;
             }
-            document.getElementById('v'+c).innerText = (entry.data[0 * CHANNELS + c] * 3.3 / 4095).toFixed(2);
-            document.getElementById('pp'+c).innerText = ((max - min) * 3.3 / 4095).toFixed(2);
+            document.getElementById('v'+c).innerText = (entry.data[0 * CHANNELS + c] / 1000.0).toFixed(2);
+            document.getElementById('pp'+c).innerText = ((max - min) / 1000.0).toFixed(2);
             document.getElementById('rms'+c).innerText = Math.sqrt(sumSq / SAMPLES).toFixed(2);
 
             const tInd = document.getElementById('t'+c);
@@ -539,6 +559,13 @@ const char* html_index = R"rawliteral(
           `;
           document.getElementById('mode-bit').innerText = (trig & (1 << 7)) ? "[CAM MODE]" : "";
         }
+
+        const trigStateEl = document.getElementById('trig-state');
+        if (trig & 0x1F) {
+           trigStateEl.innerText = "TRIG'D";
+           trigStateEl.classList.add('trig-active');
+           setTimeout(() => { trigStateEl.innerText = "WAITING"; trigStateEl.classList.remove('trig-active'); }, 500);
+        }
         requestAnimationFrame(render);
       };
     }
@@ -596,6 +623,7 @@ const char* html_index = R"rawliteral(
     function updateHPos() {
        triggerPos = parseInt(document.getElementById('ctrl-hpos').value);
        document.getElementById('val-hpos').innerText = triggerPos + '%';
+       document.getElementById('trig-pos-marker').style.left = triggerPos + '%';
        if(ws && ws.readyState === WebSocket.OPEN) {
           const buf = new Uint8Array(2);
           buf[0] = 'P'.charCodeAt(0);
@@ -623,7 +651,7 @@ const char* html_index = R"rawliteral(
       if (history.length === 0) return;
       const latest = history[history.length - 1].data;
       for (let c = 0; c < CHANNELS; c++) {
-        let min = 4095, max = 0;
+        let min = 3300, max = 0;
         for (let i = 0; i < SAMPLES; i++) {
           const val = latest[i * CHANNELS + c];
           if (val < min) min = val;
@@ -632,9 +660,9 @@ const char* html_index = R"rawliteral(
         const range = max - min;
         if (range > 10) {
           const mid = (max + min) / 2;
-          chanSettings[c].scale = 1.8 / (range / 4095); // Aim for ~90% height
+          chanSettings[c].scale = 1.8 / (range / 3300); // Aim for ~90% height
           if (chanSettings[c].scale > 5.0) chanSettings[c].scale = 5.0; // Limit
-          chanSettings[c].offset = -(mid / 4095 * 2 - 1) * chanSettings[c].scale;
+          chanSettings[c].offset = -(mid / 3300 * 2 - 1) * chanSettings[c].scale;
 
           document.getElementById('ctrl-s' + c).value = chanSettings[c].scale;
           document.getElementById('ctrl-o' + c).value = chanSettings[c].offset;
@@ -665,7 +693,7 @@ const char* html_index = R"rawliteral(
       for (let i = 0; i < SAMPLES; i++) {
         csv += i;
         for (let c = 0; c < CHANNELS; c++) {
-          csv += "," + (latest.data[i * CHANNELS + c] * 3.3 / 4095).toFixed(4);
+          csv += "," + (latest.data[i * CHANNELS + c] / 1000.0).toFixed(4);
         }
         csv += "\n";
       }
@@ -684,6 +712,7 @@ const char* html_index = R"rawliteral(
     window.onresize();
     initUI();
     createGrid();
+    updateHPos();
     connect();
   </script>
 </body>
