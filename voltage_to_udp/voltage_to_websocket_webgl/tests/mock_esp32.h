@@ -158,6 +158,8 @@ struct adc_digi_output_data_t {
 inline esp_err_t adc_continuous_new_handle(adc_continuous_handle_cfg_t* cfg, adc_continuous_handle_t* handle) { return ESP_OK; }
 inline esp_err_t adc_continuous_config(adc_continuous_handle_t handle, adc_continuous_config_t* cfg) { return ESP_OK; }
 inline esp_err_t adc_continuous_start(adc_continuous_handle_t handle) { return ESP_OK; }
+inline esp_err_t adc_continuous_stop(adc_continuous_handle_t handle) { return ESP_OK; }
+inline esp_err_t adc_continuous_deinit(adc_continuous_handle_t handle) { return ESP_OK; }
 inline esp_err_t adc_continuous_read(adc_continuous_handle_t handle, uint8_t* buf, uint32_t len, uint32_t* out_len, uint32_t timeout) { return ESP_OK; }
 
 typedef struct {

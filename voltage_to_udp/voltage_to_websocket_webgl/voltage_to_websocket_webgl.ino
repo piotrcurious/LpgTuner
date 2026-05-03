@@ -16,7 +16,7 @@ extern "C" {
 #define ADC_CHANNELS_COUNT 4
 static adc_channel_t adc_channels[ADC_CHANNELS_COUNT] = {ADC_CHANNEL_0, ADC_CHANNEL_3, ADC_CHANNEL_6, ADC_CHANNEL_7};
 
-#define ADC_SAMPLE_FREQ_HZ    50000
+volatile uint32_t adc_sample_freq = 50000;
 #define ADC_READ_BUF_BYTES    (16 * 1024)
 #define ADC_FRAME_SIZE        256
 #define ADC_READ_TIMEOUT_MS   10
@@ -27,6 +27,7 @@ static esp_adc_cal_characteristics_t *adc_chars;
 // Simulation Mode
 volatile bool simulation_mode = false;
 volatile uint8_t sim_noise_level = 0; // 0-100
+volatile bool adc_needs_reconfig = false;
 float sim_phase = 0;
 
 // Trigger Configuration
@@ -45,6 +46,11 @@ volatile int run_mode = 0; // 0: Auto, 1: Normal, 2: Single
 volatile uint8_t trigger_mask = 0x0F; // All 4 pins by default
 volatile uint8_t cam_wheel_target = 0;
 
+// Analog Trigger Configuration
+volatile int8_t analog_trig_ch = -1; // -1: Disabled, 0-3: Channel index
+volatile uint16_t analog_trig_level = 2048;
+volatile uint8_t trigger_pos_pct = 10; // 10% of window is pre-trigger
+
 // Data Buffering
 #define SAMPLES_PER_PACKET 512
 #pragma pack(push, 1)
@@ -52,6 +58,7 @@ struct ScopePacket {
   uint32_t sequence;
   uint32_t timestamp;
   uint16_t trigger_flags;
+  uint16_t trigger_sample_idx;
   uint32_t free_heap;
   uint16_t loop_time_us; // Execution time of one processing loop
   uint16_t interval_us;  // Time between packet sends
@@ -119,6 +126,14 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
         trigger_mask = data[1];
       } else if (len > 0 && data[0] == 'T') { // force Trigger
         trigger_occurred[0] = true;
+      } else if (len > 0 && data[0] == 'A') { // Analog Trigger: A[CH][LEVEL_H][LEVEL_L]
+        analog_trig_ch = (int8_t)data[1];
+        if (len >= 4) analog_trig_level = (data[2] << 8) | data[3];
+      } else if (len > 0 && data[0] == 'P') { // Position
+        trigger_pos_pct = data[1];
+      } else if (len > 0 && data[0] == 'H') { // sample rate (Hz)
+        adc_sample_freq = atoi((char*)data + 1);
+        adc_needs_reconfig = true;
       } else if (len > 0 && data[0] == 'S') {
         simulation_mode = (data[1] == '1');
       } else if (len > 0 && data[0] == 'N') {
@@ -152,7 +167,7 @@ void setup_adc() {
   adc_continuous_config_t dig_cfg = {
     .pattern_num = ADC_CHANNELS_COUNT,
     .adc_pattern = NULL,
-    .sample_freq_hz = ADC_SAMPLE_FREQ_HZ,
+    .sample_freq_hz = adc_sample_freq,
     .conv_mode = ADC_CONV_SINGLE_UNIT_1,
     .format = ADC_DIGI_OUTPUT_FORMAT_TYPE1,
   };
@@ -172,12 +187,24 @@ void setup_adc() {
 
 void scope_task(void *pv) {
   uint8_t *read_raw = (uint8_t*)malloc(ADC_READ_BUF_BYTES);
-  uint32_t sample_idx = 0;
-  packet_ptr = (ScopePacket*)malloc(sizeof(ScopePacket));
+  const int CIRC_BUF_SIZE = 1024;
+  uint16_t *circ_buf = (uint16_t*)malloc(CIRC_BUF_SIZE * ADC_CHANNELS_COUNT * sizeof(uint16_t));
+  uint32_t circ_write_idx = 0;
 
+  packet_ptr = (ScopePacket*)malloc(sizeof(ScopePacket));
   uint32_t last_packet_time = micros();
+  bool triggered = false;
+  uint32_t trigger_at_idx = 0;
+  uint32_t samples_after_trigger = 0;
+  uint16_t prev_analog_val[ADC_CHANNELS_COUNT] = {0,0,0,0};
 
   while (1) {
+    if (adc_needs_reconfig) {
+      adc_continuous_stop(adc_handle);
+      adc_continuous_deinit(adc_handle);
+      setup_adc();
+      adc_needs_reconfig = false;
+    }
     if (ws.count() == 0 || !is_running) {
       vTaskDelay(pdMS_TO_TICKS(100));
       continue;
@@ -187,6 +214,7 @@ void scope_task(void *pv) {
 
     if (simulation_mode) {
       for (int i = 0; i < 64; i++) {
+        uint16_t current_samples[ADC_CHANNELS_COUNT];
         for (int ch = 0; ch < ADC_CHANNELS_COUNT; ch++) {
           float val = 0;
           if (ch == 0) val = 2048 + 1000 * sin(sim_phase);
@@ -194,40 +222,72 @@ void scope_task(void *pv) {
           else if (ch == 2) val = (fmod(sim_phase, 2.0 * PI) / (2.0 * PI)) * 4095;
           else if (ch == 3) val = (sin(sim_phase * 5.0) > 0) ? 3500 : 500;
           if (sim_noise_level > 0) val += (random(sim_noise_level * 10) - (sim_noise_level * 5));
-          packet_ptr->data[sample_idx * ADC_CHANNELS_COUNT + ch] = (uint16_t)constrain(val, 0, 4095);
+          current_samples[ch] = (uint16_t)constrain(val, 0, 4095);
+          circ_buf[circ_write_idx * ADC_CHANNELS_COUNT + ch] = current_samples[ch];
         }
         sim_phase += 0.05;
-        if (packet_seq % 10 == 0 && sample_idx == 0) trigger_occurred[0] = true;
 
-        sample_idx++;
-        if (sample_idx >= SAMPLES_PER_PACKET) {
-          uint32_t now = micros();
-          packet_ptr->sequence = packet_seq++;
-          packet_ptr->timestamp = now;
-          packet_ptr->free_heap = ESP.getFreeHeap();
-          packet_ptr->loop_time_us = (uint16_t)(micros() - loop_start);
-          packet_ptr->interval_us = (uint16_t)(now - last_packet_time);
-          last_packet_time = now;
-          packet_ptr->trigger_flags = (currentMode == MODE_CAM_WHEEL) ? (1 << 7) : 0;
-
+        if (!triggered) {
+          bool trig = false;
           portENTER_CRITICAL(&trigger_mux);
-          bool any_trigger = false;
           for (int t = 0; t < TRIGGER_PINS_COUNT; t++) {
-            if (trigger_occurred[t]) {
-              packet_ptr->trigger_flags |= (1 << t);
-              trigger_occurred[t] = false;
-              if (trigger_mask & (1 << t)) any_trigger = true;
-            }
+             if (trigger_occurred[t] && (trigger_mask & (1 << t))) { trig = true; packet_ptr->trigger_flags |= (1 << t); }
           }
           portEXIT_CRITICAL(&trigger_mux);
 
-          bool should_send = (run_mode == 0) || (run_mode > 0 && any_trigger && trigger_armed);
-
-          if (should_send) {
-            ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
-            if (run_mode == 2) trigger_armed = false; // Single shot
+          if (analog_trig_ch >= 0 && analog_trig_ch < ADC_CHANNELS_COUNT) {
+            uint16_t val = current_samples[analog_trig_ch];
+            uint16_t prev = prev_analog_val[analog_trig_ch];
+            if (trigger_edge == RISING) {
+              if (prev < analog_trig_level && val >= analog_trig_level) { trig = true; packet_ptr->trigger_flags |= (1 << 4); }
+            } else {
+              if (prev > analog_trig_level && val <= analog_trig_level) { trig = true; packet_ptr->trigger_flags |= (1 << 4); }
+            }
           }
-          sample_idx = 0;
+
+          if (trig || run_mode == 0) {
+            if (run_mode == 0 || trigger_armed) {
+              triggered = true;
+              trigger_at_idx = circ_write_idx;
+              samples_after_trigger = 0;
+            }
+          }
+        }
+
+        for(int ch=0; ch<ADC_CHANNELS_COUNT; ch++) prev_analog_val[ch] = current_samples[ch];
+        circ_write_idx = (circ_write_idx + 1) % CIRC_BUF_SIZE;
+
+        if (triggered) {
+          uint32_t post_trigger_needed = SAMPLES_PER_PACKET * (100 - trigger_pos_pct) / 100;
+          samples_after_trigger++;
+          if (samples_after_trigger >= post_trigger_needed) {
+            uint32_t now = micros();
+            packet_ptr->sequence = packet_seq++;
+            packet_ptr->timestamp = now;
+            packet_ptr->free_heap = ESP.getFreeHeap();
+            packet_ptr->loop_time_us = (uint16_t)(micros() - loop_start);
+            packet_ptr->interval_us = (uint16_t)(now - last_packet_time);
+            last_packet_time = now;
+            if (currentMode == MODE_CAM_WHEEL) packet_ptr->trigger_flags |= (1 << 7);
+
+            uint32_t pre_trigger_samples = SAMPLES_PER_PACKET * trigger_pos_pct / 100;
+            int start_idx = (int)trigger_at_idx - (int)pre_trigger_samples;
+            if (start_idx < 0) start_idx += CIRC_BUF_SIZE;
+            packet_ptr->trigger_sample_idx = (uint16_t)pre_trigger_samples;
+
+            for (int s = 0; s < SAMPLES_PER_PACKET; s++) {
+              int src = (start_idx + s) % CIRC_BUF_SIZE;
+              for (int ch = 0; ch < ADC_CHANNELS_COUNT; ch++) packet_ptr->data[s * ADC_CHANNELS_COUNT + ch] = circ_buf[src * ADC_CHANNELS_COUNT + ch];
+            }
+
+            ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
+            if (run_mode == 2) trigger_armed = false;
+            triggered = false;
+            packet_ptr->trigger_flags = 0;
+            portENTER_CRITICAL(&trigger_mux);
+            for(int t=0; t<TRIGGER_PINS_COUNT; t++) trigger_occurred[t] = false;
+            portEXIT_CRITICAL(&trigger_mux);
+          }
         }
       }
       vTaskDelay(pdMS_TO_TICKS(5));
@@ -243,37 +303,73 @@ void scope_task(void *pv) {
           int chan_idx = -1;
           for(int j=0; j<ADC_CHANNELS_COUNT; j++) if(adc_channels[j] == (adc_channel_t)chan) { chan_idx = j; break; }
           if(chan_idx == -1) continue;
-          packet_ptr->data[sample_idx * ADC_CHANNELS_COUNT + chan_idx] = (uint16_t)val;
-          if (chan_idx == ADC_CHANNELS_COUNT - 1) {
-            sample_idx++;
-            if (sample_idx >= SAMPLES_PER_PACKET) {
-              uint32_t now = micros();
-              packet_ptr->sequence = packet_seq++;
-              packet_ptr->timestamp = now;
-              packet_ptr->free_heap = ESP.getFreeHeap();
-              packet_ptr->loop_time_us = (uint16_t)(micros() - loop_start);
-              packet_ptr->interval_us = (uint16_t)(now - last_packet_time);
-              last_packet_time = now;
-              packet_ptr->trigger_flags = (currentMode == MODE_CAM_WHEEL) ? (1 << 7) : 0;
+          circ_buf[circ_write_idx * ADC_CHANNELS_COUNT + chan_idx] = (uint16_t)val;
 
+          if (chan_idx == ADC_CHANNELS_COUNT - 1) {
+            if (!triggered) {
+              bool trig = false;
               portENTER_CRITICAL(&trigger_mux);
-              bool any_trigger = false;
               for (int t = 0; t < TRIGGER_PINS_COUNT; t++) {
-                if (trigger_occurred[t]) {
-                  packet_ptr->trigger_flags |= (1 << t);
-                  trigger_occurred[t] = false;
-                  if (trigger_mask & (1 << t)) any_trigger = true;
-                }
+                 if (trigger_occurred[t] && (trigger_mask & (1 << t))) { trig = true; packet_ptr->trigger_flags |= (1 << t); }
               }
               portEXIT_CRITICAL(&trigger_mux);
 
-              bool should_send = (run_mode == 0) || (run_mode > 0 && any_trigger && trigger_armed);
-
-              if (should_send) {
-                ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
-                if (run_mode == 2) trigger_armed = false; // Single shot
+              if (analog_trig_ch >= 0 && analog_trig_ch < ADC_CHANNELS_COUNT) {
+                uint16_t v = (uint16_t)val;
+                uint16_t prev = prev_analog_val[analog_trig_ch];
+                if (trigger_edge == RISING) {
+                  if (prev < analog_trig_level && v >= analog_trig_level) { trig = true; packet_ptr->trigger_flags |= (1 << 4); }
+                } else {
+                  if (prev > analog_trig_level && v <= analog_trig_level) { trig = true; packet_ptr->trigger_flags |= (1 << 4); }
+                }
               }
-              sample_idx = 0;
+
+              if (trig || run_mode == 0) {
+                if (run_mode == 0 || trigger_armed) {
+                  triggered = true;
+                  trigger_at_idx = circ_write_idx;
+                  samples_after_trigger = 0;
+                }
+              }
+            }
+
+            for(int ch=0; ch<ADC_CHANNELS_COUNT; ch++) {
+               if(ch == chan_idx) prev_analog_val[ch] = (uint16_t)val;
+               else prev_analog_val[ch] = circ_buf[circ_write_idx * ADC_CHANNELS_COUNT + ch];
+            }
+            circ_write_idx = (circ_write_idx + 1) % CIRC_BUF_SIZE;
+
+            if (triggered) {
+              uint32_t post_trigger_needed = SAMPLES_PER_PACKET * (100 - trigger_pos_pct) / 100;
+              samples_after_trigger++;
+              if (samples_after_trigger >= post_trigger_needed) {
+                uint32_t now = micros();
+                packet_ptr->sequence = packet_seq++;
+                packet_ptr->timestamp = now;
+                packet_ptr->free_heap = ESP.getFreeHeap();
+                packet_ptr->loop_time_us = (uint16_t)(micros() - loop_start);
+                packet_ptr->interval_us = (uint16_t)(now - last_packet_time);
+                last_packet_time = now;
+                if (currentMode == MODE_CAM_WHEEL) packet_ptr->trigger_flags |= (1 << 7);
+
+                uint32_t pre_trigger_samples = SAMPLES_PER_PACKET * trigger_pos_pct / 100;
+                int start_idx = (int)trigger_at_idx - (int)pre_trigger_samples;
+                if (start_idx < 0) start_idx += CIRC_BUF_SIZE;
+                packet_ptr->trigger_sample_idx = (uint16_t)pre_trigger_samples;
+
+                for (int s = 0; s < SAMPLES_PER_PACKET; s++) {
+                  int src = (start_idx + s) % CIRC_BUF_SIZE;
+                  for (int ch = 0; ch < ADC_CHANNELS_COUNT; ch++) packet_ptr->data[s * ADC_CHANNELS_COUNT + ch] = circ_buf[src * ADC_CHANNELS_COUNT + ch];
+                }
+
+                ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
+                if (run_mode == 2) trigger_armed = false;
+                triggered = false;
+                packet_ptr->trigger_flags = 0;
+                portENTER_CRITICAL(&trigger_mux);
+                for(int t=0; t<TRIGGER_PINS_COUNT; t++) trigger_occurred[t] = false;
+                portEXIT_CRITICAL(&trigger_mux);
+              }
             }
           }
         }
