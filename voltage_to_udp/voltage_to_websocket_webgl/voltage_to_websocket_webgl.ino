@@ -38,7 +38,15 @@ volatile uint32_t last_trigger_event_time[TRIGGER_PINS_COUNT] = {0, 0, 0, 0};
 #define TRIGGER_HOLDOFF_MS 10
 
 enum TriggerMode { MODE_INDEPENDENT, MODE_CAM_WHEEL };
+enum SyncMode { SYNC_NONE, SYNC_MISSING_TOOTH, SYNC_EXTERNAL };
+
 volatile TriggerMode currentMode = MODE_INDEPENDENT;
+volatile SyncMode currentSync = SYNC_NONE;
+volatile uint8_t trigger_divider = 1;
+volatile uint8_t pulse_counter = 0;
+volatile uint32_t last_pulse_time = 0;
+volatile uint32_t pulse_interval_avg = 0;
+
 volatile int trigger_edge = RISING; // RISING or FALLING
 volatile bool is_running = true;
 volatile bool trigger_armed = true; // For "Normal" mode
@@ -82,13 +90,46 @@ portMUX_TYPE trigger_mux = portMUX_INITIALIZER_UNLOCKED;
 // Interrupts
 void IRAM_ATTR handleTrigger(int idx) {
   uint32_t now = millis();
+  uint32_t now_us = micros();
+
   if (now - last_trigger_event_time[idx] < TRIGGER_HOLDOFF_MS) return;
   last_trigger_event_time[idx] = now;
 
   portENTER_CRITICAL_ISR(&trigger_mux);
+
   if (idx == 0 && currentMode == MODE_CAM_WHEEL) {
-    trigger_occurred[cam_wheel_target] = true;
-    cam_wheel_target = (cam_wheel_target + 1) % ADC_CHANNELS_COUNT;
+    bool do_trigger = false;
+    uint32_t interval = now_us - last_pulse_time;
+    last_pulse_time = now_us;
+
+    // Sync Logic
+    if (currentSync == SYNC_MISSING_TOOTH) {
+      if (interval > (pulse_interval_avg * 1.5) && pulse_interval_avg > 0) {
+        pulse_counter = 0; // Reset on gap
+      }
+      // Update moving average (simplified)
+      if (interval < pulse_interval_avg * 2 || pulse_interval_avg == 0) {
+        pulse_interval_avg = (pulse_interval_avg == 0) ? interval : (pulse_interval_avg * 7 + interval) / 8;
+      }
+    } else if (currentSync == SYNC_EXTERNAL) {
+       // External reset happens in idx 1 handler
+    }
+
+    if (pulse_counter == 0) {
+      do_trigger = true;
+    }
+
+    pulse_counter++;
+    if (pulse_counter >= trigger_divider) {
+      pulse_counter = 0;
+    }
+
+    if (do_trigger) {
+      trigger_occurred[cam_wheel_target] = true;
+      cam_wheel_target = (cam_wheel_target + 1) % ADC_CHANNELS_COUNT;
+    }
+  } else if (idx == 1 && currentMode == MODE_CAM_WHEEL && currentSync == SYNC_EXTERNAL) {
+    pulse_counter = 0; // External Sync Reset
   } else if (currentMode == MODE_INDEPENDENT) {
     trigger_occurred[idx] = true;
   }
@@ -140,6 +181,11 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
         simulation_mode = (data[1] == '1');
       } else if (len > 0 && data[0] == 'N') {
         sim_noise_level = atoi((char*)data + 1);
+      } else if (len > 0 && data[0] == 'V') { // diVider
+        trigger_divider = atoi((char*)data + 1);
+        if (trigger_divider < 1) trigger_divider = 1;
+      } else if (len > 0 && data[0] == 'Y') { // sYnc mode
+        currentSync = (SyncMode)(data[1] - '0');
       } else if (len > 0 && data[0] == 'W') {
         String cmd = String((char*)data).substring(2);
         int sep = cmd.indexOf(';');

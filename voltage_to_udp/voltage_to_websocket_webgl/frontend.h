@@ -76,6 +76,16 @@ const char* html_index = R"rawliteral(
         <button id="btnEdgeR" class="btn active" onclick="setEdge(1)">RISE</button>
         <button id="btnEdgeF" class="btn" onclick="setEdge(0)">FALL</button>
       </div>
+      <div id="cam-config" style="display:none; background:rgba(0,0,0,0.3); padding:5px; border:1px solid #444; margin-bottom:5px;">
+        <label>PULSE DIVIDER <span class="val-display" id="val-div">1</span></label>
+        <input type="range" id="ctrl-div" min="1" max="60" value="1" oninput="updateCamConfig()">
+        <label>SYNC MODE</label>
+        <select id="ctrl-sync" class="btn" onchange="updateCamConfig()" style="width:100%; font-size:10px; height:22px; background:#222; border:1px solid #444; color:#0f0;">
+          <option value="0">NONE</option>
+          <option value="1">MISSING TOOTH</option>
+          <option value="2">EXTERNAL PIN (D13)</option>
+        </select>
+      </div>
       <div style="margin-bottom:5px;">
         <label>ANALOG SRC</label>
         <select id="analogCh" class="btn" onchange="updateAnalogTrig()" style="width:100%; font-size:10px; height:22px; background:#222; border:1px solid #444; color:#0f0;">
@@ -598,6 +608,17 @@ const char* html_index = R"rawliteral(
         ws.send('M' + m);
         document.getElementById('btnType0').classList.toggle('active', m === 0);
         document.getElementById('btnType1').classList.toggle('active', m === 1);
+        document.getElementById('cam-config').style.display = (m === 1) ? 'block' : 'none';
+      }
+    }
+
+    function updateCamConfig() {
+      const div = document.getElementById('ctrl-div').value;
+      const sync = document.getElementById('ctrl-sync').value;
+      document.getElementById('val-div').innerText = div;
+      if(ws && ws.readyState === WebSocket.OPEN) {
+        ws.send('V' + div);
+        ws.send('Y' + sync);
       }
     }
 
