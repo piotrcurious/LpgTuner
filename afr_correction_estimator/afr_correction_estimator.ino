@@ -41,18 +41,24 @@ int buffer_index = 0;
 bool buffer_full = false;
 
 // Declare global variables for storing results
-float afr = 0;
+float afr = STOICH;
 float deviation = 0;
 float injector_rate = 0;
 float injector_magnitude = 0;
 float lambda_correlation = 0;
 int best_lag = 0;
 
+// EMA filtering factor (0.0 to 1.0, lower is more filtering)
+const float EMA_ALPHA = 0.3;
+float afr_filtered = STOICH;
+float correlation_filtered = 0;
+
 unsigned long last_sample_time = 0xFFFFFFFF;
 const unsigned long sample_interval = 1000 / FREQ;
 
 // Threshold for narrowband O2 sensor (0.45V)
 const int THRESHOLD = (int)(0.45 / 5.0 * 1023.0);
+const int HYSTERESIS = 20; // Hysteresis for peak/valley detection (approx 0.1V)
 
 // Variables for peak detection
 float avg_peak = 0;
@@ -65,6 +71,9 @@ void setup() {
   last_sample_time = 0xFFFFFFFF;
   buffer_index = 0;
   buffer_full = false;
+  afr = STOICH;
+  afr_filtered = STOICH;
+  correlation_filtered = 0;
 }
 
 void analyze_data() {
@@ -73,25 +82,41 @@ void analyze_data() {
   peak_count = 0;
   valley_count = 0;
 
-  int state = 0; // 0: initial, 1: rising, -1: falling
-  int prev_value = lambda_buffer[0];
+  int state = 0; // 1: rising, -1: falling, 0: initial
+  int extreme_val = lambda_buffer[0];
 
   for (int i = 1; i < BUFFER_SIZE; i++) {
     int curr_value = lambda_buffer[i];
-    if (curr_value > prev_value) {
-      if (state == -1) {
-        sum_valleys += prev_value;
-        valley_count++;
+
+    if (state == 0) {
+      if (curr_value > extreme_val + HYSTERESIS) {
+        state = 1;
+        extreme_val = curr_value;
+      } else if (curr_value < extreme_val - HYSTERESIS) {
+        state = -1;
+        extreme_val = curr_value;
       }
-      state = 1;
-    } else if (curr_value < prev_value) {
-      if (state == 1) {
-        sum_peaks += prev_value;
+    } else if (state == 1) { // Rising
+      if (curr_value > extreme_val) {
+        extreme_val = curr_value;
+      } else if (curr_value < extreme_val - HYSTERESIS) {
+        // Peak detected
+        sum_peaks += extreme_val;
         peak_count++;
+        state = -1;
+        extreme_val = curr_value;
       }
-      state = -1;
+    } else if (state == -1) { // Falling
+      if (curr_value < extreme_val) {
+        extreme_val = curr_value;
+      } else if (curr_value > extreme_val + HYSTERESIS) {
+        // Valley detected
+        sum_valleys += extreme_val;
+        valley_count++;
+        state = 1;
+        extreme_val = curr_value;
+      }
     }
-    prev_value = curr_value;
   }
 
   if (peak_count > 0) avg_peak = sum_peaks / peak_count;
@@ -124,6 +149,9 @@ void calculate_afr() {
 
   afr = estimated_lambda * STOICH;
   deviation = (afr - STOICH);
+
+  // Apply EMA filtering
+  afr_filtered = (EMA_ALPHA * afr) + ((1.0 - EMA_ALPHA) * afr_filtered);
 }
 
 void calculate_injector_stats() {
@@ -188,14 +216,28 @@ void calculate_lambda_correlation() {
 
   lambda_correlation = (float)max_corr;
   best_lag = lag_at_max;
+
+  // Apply EMA filtering to correlation
+  correlation_filtered = (EMA_ALPHA * lambda_correlation) + ((1.0 - EMA_ALPHA) * correlation_filtered);
 }
 
 void print_results() {
+  // Detailed output for Serial Monitor
   Serial.print("AFR: "); Serial.print(afr);
+  Serial.print(" | AFR_EMA: "); Serial.print(afr_filtered);
   Serial.print(" | Dev: "); Serial.print(deviation);
   Serial.print(" | InjRate: "); Serial.print(injector_rate);
   Serial.print(" | Corr: "); Serial.print(lambda_correlation);
+  Serial.print(" | Corr_EMA: "); Serial.print(correlation_filtered);
   Serial.print(" | Lag: "); Serial.println(best_lag);
+
+  // Simple output for Serial Plotter (if needed, typically commented out or on separate lines)
+  /*
+  Serial.print("AFR:"); Serial.print(afr);
+  Serial.print(",AFR_EMA:"); Serial.print(afr_filtered);
+  Serial.print(",Corr:"); Serial.print(lambda_correlation);
+  Serial.print(",Corr_EMA:"); Serial.println(correlation_filtered);
+  */
 }
 
 void loop() {

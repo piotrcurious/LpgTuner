@@ -4,10 +4,11 @@ This project analyzes lambda probe and injector signals to estimate Air-Fuel Rat
 
 ## Features
 - Buffer-based data analysis (100 samples per calculation).
-- Peak and valley detection for lambda probe signal.
-- AFR estimation using a simplified narrowband model.
+- State-machine based peak and valley detection with **hysteresis** for noise immunity.
+- Robust AFR estimation using a narrowband model with baseline fallbacks.
 - Injector signal statistics (mean, standard deviation, fluctuation rate).
-- Pearson correlation coefficient between lambda and injector signals.
+- **Cross-correlation** with variable lag (Pearson coefficient) to determine transport delay.
+- **EMA filtering** on results for stable readings.
 
 ## Pinout
 - `A0`: Lambda probe signal.
