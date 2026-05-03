@@ -42,6 +42,13 @@ const char* html_index = R"rawliteral(
     <div class="ctrl-group">
       <label>TIMEBASE (Horizontal Zoom) <span class="val-display" id="val-tb">1.0</span></label>
       <input type="range" id="ctrl-tb" min="0.1" max="5.0" step="0.1" value="1.0" oninput="updateControls()">
+      <label>SAMPLE RATE (Hz) <span class="val-display" id="val-sr">50000</span></label>
+      <select id="ctrl-sr" class="btn" onchange="updateSampleRate()" style="width:100%; font-size:10px; height:22px;">
+        <option value="10000">10 kHz</option>
+        <option value="20000">20 kHz</option>
+        <option value="50000" selected>50 kHz</option>
+        <option value="100000">100 kHz</option>
+      </select>
     </div>
 
     <div class="ctrl-group">
@@ -56,15 +63,31 @@ const char* html_index = R"rawliteral(
 
     <div class="ctrl-group">
       <div style="margin-bottom: 5px; font-size: 10px; color: #888;">TRIGGER CONFIG</div>
-      <button id="btnType0" class="btn active" onclick="setTriggerType(0)">INDEPENDENT</button>
-      <button id="btnType1" class="btn" onclick="setTriggerType(1)">CAM WHEEL</button>
-      <div style="margin-top:5px;">
-        <button id="btnEdgeR" class="btn active" onclick="setEdge(1)">RISING</button>
-        <button id="btnEdgeF" class="btn" onclick="setEdge(0)">FALLING</button>
+      <div style="display:flex; gap:2px; margin-bottom:5px;">
+        <button id="btnType0" class="btn active" onclick="setTriggerType(0)">IND</button>
+        <button id="btnType1" class="btn" onclick="setTriggerType(1)">CAM</button>
+        <button id="btnEdgeR" class="btn active" onclick="setEdge(1)">RISE</button>
+        <button id="btnEdgeF" class="btn" onclick="setEdge(0)">FALL</button>
+      </div>
+      <div style="margin-bottom:5px;">
+        <label>ANALOG SRC</label>
+        <select id="analogCh" class="btn" onchange="updateAnalogTrig()" style="width:100%; font-size:10px; height:22px; background:#222; border:1px solid #444; color:#0f0;">
+          <option value="-1">DISABLED</option>
+          <option value="0">CH1</option>
+          <option value="1">CH2</option>
+          <option value="2">CH3</option>
+          <option value="3">CH4</option>
+        </select>
+        <label>LEVEL <span class="val-display" id="val-atrig">1.65V</span></label>
+        <input type="range" id="ctrl-atrig" min="0" max="4095" value="2048" oninput="updateAnalogTrig()">
+      </div>
+      <div style="margin-bottom:5px;">
+         <label>HORIZ POS <span class="val-display" id="val-hpos">10%</span></label>
+         <input type="range" id="ctrl-hpos" min="0" max="100" value="10" oninput="updateHPos()">
       </div>
       <div style="margin-top:5px;">
-        <button id="btnTriggerNow" class="btn" onclick="forceTrigger()">FORCE TRIG</button>
-        <button id="btnAutoScale" class="btn" onclick="autoScale()">AUTO-SCALE</button>
+        <button id="btnTriggerNow" class="btn" onclick="forceTrigger()">FORCE</button>
+        <button id="btnAutoScale" class="btn" onclick="autoScale()">AUTO</button>
       </div>
       <div style="margin-top:5px; font-size:9px; color:#888;">MASK:
         <input type="checkbox" id="m0" checked onclick="updateMask()">1
@@ -76,9 +99,22 @@ const char* html_index = R"rawliteral(
 
     <div class="ctrl-group">
       <div style="margin-bottom: 5px; font-size: 10px; color: #888;">VIEW / CURSORS</div>
-      <button id="btnCursors" class="btn" onclick="toggleCursors()">CURSORS: OFF</button>
+      <div style="display:flex; gap:2px; margin-bottom:5px;">
+        <button id="btnCursors" class="btn" onclick="toggleCursors()">CURSORS</button>
+        <button class="btn" onclick="exportCSV()">CSV</button>
+      </div>
       <label>PERSISTENCE <span class="val-display" id="val-persist">8</span></label>
       <input type="range" id="ctrl-persist" min="1" max="16" step="1" value="8" oninput="updatePersistence()">
+    </div>
+
+    <div class="ctrl-group">
+      <div style="margin-bottom: 5px; font-size: 10px; color: #888;">MATH CHANNEL</div>
+      <select id="mathOp" class="btn" onchange="render()" style="width:100%; font-size:10px; height:22px; background:#222; border:1px solid #444; color:#f0f;">
+        <option value="none">OFF</option>
+        <option value="add">CH1 + CH2</option>
+        <option value="sub">CH1 - CH2</option>
+        <option value="mul">CH1 * CH2</option>
+      </select>
     </div>
 
     <div class="ctrl-group">
@@ -151,6 +187,9 @@ const char* html_index = R"rawliteral(
     const SAMPLES = 512;
     const CHANNELS = 4;
     let phosphor_count = 8;
+    let triggerPos = 10; // %
+    let analogTrigCh = -1;
+    let analogTrigLevel = 2048;
 
     let history = [];
     const xCoords = new Float32Array(SAMPLES);
@@ -161,6 +200,7 @@ const char* html_index = R"rawliteral(
     gl.bufferData(gl.ARRAY_BUFFER, xCoords, gl.STATIC_DRAW);
 
     const colors = [ [1,1,0,1], [0,1,1,1], [1,0,1,1], [0,1,0,1] ];
+    const mathColor = [1,0,1,1];
     let chanSettings = [
       { offset: 0.6, scale: 0.25 },
       { offset: 0.2, scale: 0.25 },
@@ -224,6 +264,23 @@ const char* html_index = R"rawliteral(
       }
       gl.bindBuffer(gl.ARRAY_BUFFER, gridBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(gridPoints), gl.STATIC_DRAW);
+    }
+
+    function drawTriggerLine() {
+      if (analogTrigCh < 0) return;
+      gl.uniform1f(gl.getUniformLocation(program, 'u_offset'), chanSettings[analogTrigCh].offset);
+      gl.uniform1f(gl.getUniformLocation(program, 'u_scale'), chanSettings[analogTrigCh].scale);
+      gl.uniform1f(gl.getUniformLocation(program, 'u_tb'), 1);
+      gl.uniform4f(gl.getUniformLocation(program, 'u_color'), 1, 0, 0, 0.4);
+
+      const pts = new Float32Array([-1, analogTrigLevel, 1, analogTrigLevel]);
+      const b = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, b);
+      gl.bufferData(gl.ARRAY_BUFFER, pts, gl.STREAM_DRAW);
+      gl.vertexAttribPointer(gl.getAttribLocation(program, 'a_x'), 1, gl.FLOAT, false, 8, 0);
+      gl.vertexAttribPointer(gl.getAttribLocation(program, 'a_y'), 1, gl.FLOAT, false, 8, 4);
+      gl.drawArrays(gl.LINES, 0, 2);
+      gl.deleteBuffer(b);
     }
 
     function drawGrid() {
@@ -308,6 +365,7 @@ const char* html_index = R"rawliteral(
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
 
       drawGrid();
+      drawTriggerLine();
 
       if (history.length === 0) {
         drawCursors();
@@ -353,6 +411,35 @@ const char* html_index = R"rawliteral(
           gl.uniform1f(u_tb, tbVal);
           gl.drawArrays(gl.LINE_STRIP, 0, SAMPLES);
 
+        }
+
+        const mathOp = document.getElementById('mathOp').value;
+        if (mathOp !== 'none') {
+           const mathData = new Float32Array(SAMPLES);
+           for(let i=0; i<SAMPLES; i++) {
+              const v1 = entry.data[i * CHANNELS + 0];
+              const v2 = entry.data[i * CHANNELS + 1];
+              if (mathOp === 'add') mathData[i] = (v1 + v2) / 2;
+              else if (mathOp === 'sub') mathData[i] = (v1 - v2) + 2048;
+              else if (mathOp === 'mul') mathData[i] = (v1 * v2) / 4095;
+           }
+           const mathBuf = gl.createBuffer();
+           gl.bindBuffer(gl.ARRAY_BUFFER, mathBuf);
+           gl.bufferData(gl.ARRAY_BUFFER, mathData, gl.STREAM_DRAW);
+           gl.vertexAttribPointer(a_x, 1, gl.FLOAT, false, 0, 0);
+           gl.bindBuffer(gl.ARRAY_BUFFER, mathBuf);
+           gl.vertexAttribPointer(a_y, 1, gl.FLOAT, false, 0, 0);
+
+           const mCol = [...mathColor];
+           mCol[3] = alpha * 0.8;
+           gl.uniform4fv(u_color, mCol);
+           gl.uniform1f(u_offset, 0);
+           gl.uniform1f(u_scale, 0.5);
+           gl.drawArrays(gl.LINE_STRIP, 0, SAMPLES);
+           gl.deleteBuffer(mathBuf);
+        }
+
+        for (let c = 0; c < CHANNELS; c++) {
           if (h === history.length - 1) {
             let min = 4095, max = 0, sum = 0, sumSq = 0;
             for(let i=0; i<SAMPLES; i++) {
@@ -423,10 +510,11 @@ const char* html_index = R"rawliteral(
         const view = new DataView(e.data);
         const seq = view.getUint32(0, true);
         const trig = view.getUint16(8, true);
-        const heap = view.getUint32(10, true);
-        const loopTime = view.getUint16(14, true);
-        const interval = view.getUint16(16, true);
-        const data = new Uint16Array(e.data, 18, SAMPLES * CHANNELS);
+        const trigIdx = view.getUint16(10, true);
+        const heap = view.getUint32(12, true);
+        const loopTime = view.getUint16(16, true);
+        const interval = view.getUint16(18, true);
+        const data = new Uint16Array(e.data, 20, SAMPLES * CHANNELS);
 
         if(lastSeq !== -1 && seq !== lastSeq + 1) lossCount += (seq - lastSeq - 1);
         lastSeq = seq;
@@ -485,6 +573,37 @@ const char* html_index = R"rawliteral(
       }
     }
 
+    function updateAnalogTrig() {
+       analogTrigCh = parseInt(document.getElementById('analogCh').value);
+       analogTrigLevel = parseInt(document.getElementById('ctrl-atrig').value);
+       document.getElementById('val-atrig').innerText = (analogTrigLevel * 3.3 / 4095).toFixed(2) + 'V';
+       if(ws && ws.readyState === WebSocket.OPEN) {
+          const buf = new Uint8Array(4);
+          buf[0] = 'A'.charCodeAt(0);
+          buf[1] = analogTrigCh;
+          buf[2] = (analogTrigLevel >> 8) & 0xFF;
+          buf[3] = analogTrigLevel & 0xFF;
+          ws.send(buf);
+       }
+    }
+
+    function updateSampleRate() {
+      const hz = document.getElementById('ctrl-sr').value;
+      document.getElementById('val-sr').innerText = hz;
+      if(ws && ws.readyState === WebSocket.OPEN) ws.send('H' + hz);
+    }
+
+    function updateHPos() {
+       triggerPos = parseInt(document.getElementById('ctrl-hpos').value);
+       document.getElementById('val-hpos').innerText = triggerPos + '%';
+       if(ws && ws.readyState === WebSocket.OPEN) {
+          const buf = new Uint8Array(2);
+          buf[0] = 'P'.charCodeAt(0);
+          buf[1] = triggerPos;
+          ws.send(buf);
+       }
+    }
+
     function updateMask() {
       let mask = 0;
       for(let i=0; i<4; i++) if(document.getElementById('m'+i).checked) mask |= (1 << i);
@@ -537,6 +656,28 @@ const char* html_index = R"rawliteral(
     function saveWifi() {
       const s = document.getElementById('ssid').value, p = document.getElementById('pass').value;
       if(ws && ws.readyState === WebSocket.OPEN) ws.send('W;' + s + ';' + p);
+    }
+
+    function exportCSV() {
+      if (history.length === 0) return;
+      const latest = history[history.length - 1];
+      let csv = "Sample,CH1,CH2,CH3,CH4\n";
+      for (let i = 0; i < SAMPLES; i++) {
+        csv += i;
+        for (let c = 0; c < CHANNELS; c++) {
+          csv += "," + (latest.data[i * CHANNELS + c] * 3.3 / 4095).toFixed(4);
+        }
+        csv += "\n";
+      }
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.setAttribute('hidden', '');
+      a.setAttribute('href', url);
+      a.setAttribute('download', 'scope_capture.csv');
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
     }
 
     window.onresize = () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight; gl.viewport(0, 0, canvas.width, canvas.height); };
