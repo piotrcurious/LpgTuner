@@ -19,12 +19,12 @@ void test_sensor_readings() {
     set_micros(110000);
     camISR();
 
-    // Simulate injector pulse (2ms)
+    // Simulate injector pulse (2ms) - Active LOW
     set_micros(110000);
-    set_digital_read(injectorPin, HIGH);
+    set_digital_read(injectorPin, LOW); // ON
     injectorISR();
     set_micros(112000);
-    set_digital_read(injectorPin, LOW);
+    set_digital_read(injectorPin, HIGH); // OFF
     injectorISR();
 
     readSensors();
@@ -38,8 +38,40 @@ void test_sensor_readings() {
     assert(std::abs(throttle - 50.0) < 1.0);
 }
 
+void test_timeouts() {
+    std::cout << "Testing timeouts..." << std::endl;
+    mock_arduino_init();
+
+    // Set initial state
+    set_micros(100000);
+    camISR();
+    set_micros(110000);
+    camISR();
+
+    set_digital_read(injectorPin, LOW);
+    injectorISR();
+    set_micros(112000);
+    set_digital_read(injectorPin, HIGH);
+    injectorISR();
+
+    readSensors();
+    assert(rpm > 0);
+    assert(pulseWidthMs > 0);
+
+    // Wait for timeout (0.6s)
+    set_micros(712000);
+    readSensors();
+
+    std::cout << "RPM after timeout: " << rpm << std::endl;
+    std::cout << "PulseWidth after timeout: " << pulseWidthMs << std::endl;
+
+    assert(rpm == 0);
+    assert(pulseWidthMs == 0);
+}
+
 int main() {
     test_sensor_readings();
+    test_timeouts();
     std::cout << "All tests passed!" << std::endl;
     return 0;
 }
