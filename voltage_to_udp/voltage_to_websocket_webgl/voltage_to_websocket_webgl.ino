@@ -49,7 +49,9 @@ volatile uint8_t cam_wheel_target = 0;
 // Analog Trigger Configuration
 volatile int8_t analog_trig_ch = -1; // -1: Disabled, 0-3: Channel index
 volatile uint16_t analog_trig_level = 2048;
+volatile uint16_t analog_trig_hyst = 50; // 50 units (~40mV)
 volatile uint8_t trigger_pos_pct = 10; // 10% of window is pre-trigger
+volatile bool hysteresis_armed = false;
 
 // Data Buffering
 #define SAMPLES_PER_PACKET 512
@@ -217,11 +219,11 @@ void scope_task(void *pv) {
         uint16_t current_samples[ADC_CHANNELS_COUNT];
         for (int ch = 0; ch < ADC_CHANNELS_COUNT; ch++) {
           float val = 0;
-          if (ch == 0) val = 2048 + 1000 * sin(sim_phase);
-          else if (ch == 1) val = 2048 + 1000 * cos(sim_phase * 1.5);
-          else if (ch == 2) val = (fmod(sim_phase, 2.0 * PI) / (2.0 * PI)) * 4095;
-          else if (ch == 3) val = (sin(sim_phase * 5.0) > 0) ? 3500 : 500;
-          if (sim_noise_level > 0) val += (random(sim_noise_level * 10) - (sim_noise_level * 5));
+          if (ch == 0) val = 2048 + 1200 * sin(sim_phase); // CH1: Engine Speed/Phase
+          else if (ch == 1) val = 1500 + 800 * sin(sim_phase * 0.7); // CH2: Lambda/O2
+          else if (ch == 2) val = (fmod(sim_phase, 4.0 * PI) / (4.0 * PI)) * 3800; // CH3: TPS
+          else if (ch == 3) val = (sin(sim_phase * 4.0) > 0.95) ? 3800 : 400; // CH4: Ignition/Crank Pulse
+          if (sim_noise_level > 0) val += (random(sim_noise_level * 15) - (sim_noise_level * 7));
           current_samples[ch] = (uint16_t)constrain(val, 0, 4095);
           circ_buf[circ_write_idx * ADC_CHANNELS_COUNT + ch] = current_samples[ch];
         }
@@ -237,11 +239,12 @@ void scope_task(void *pv) {
 
           if (analog_trig_ch >= 0 && analog_trig_ch < ADC_CHANNELS_COUNT) {
             uint16_t val = current_samples[analog_trig_ch];
-            uint16_t prev = prev_analog_val[analog_trig_ch];
             if (trigger_edge == RISING) {
-              if (prev < analog_trig_level && val >= analog_trig_level) { trig = true; packet_ptr->trigger_flags |= (1 << 4); }
+              if (!hysteresis_armed && val < (analog_trig_level - analog_trig_hyst)) hysteresis_armed = true;
+              if (hysteresis_armed && val >= analog_trig_level) { trig = true; packet_ptr->trigger_flags |= (1 << 4); hysteresis_armed = false; }
             } else {
-              if (prev > analog_trig_level && val <= analog_trig_level) { trig = true; packet_ptr->trigger_flags |= (1 << 4); }
+              if (!hysteresis_armed && val > (analog_trig_level + analog_trig_hyst)) hysteresis_armed = true;
+              if (hysteresis_armed && val <= analog_trig_level) { trig = true; packet_ptr->trigger_flags |= (1 << 4); hysteresis_armed = false; }
             }
           }
 
@@ -277,7 +280,10 @@ void scope_task(void *pv) {
 
             for (int s = 0; s < SAMPLES_PER_PACKET; s++) {
               int src = (start_idx + s) % CIRC_BUF_SIZE;
-              for (int ch = 0; ch < ADC_CHANNELS_COUNT; ch++) packet_ptr->data[s * ADC_CHANNELS_COUNT + ch] = circ_buf[src * ADC_CHANNELS_COUNT + ch];
+              for (int ch = 0; ch < ADC_CHANNELS_COUNT; ch++) {
+                uint32_t raw = circ_buf[src * ADC_CHANNELS_COUNT + ch];
+                packet_ptr->data[s * ADC_CHANNELS_COUNT + ch] = (uint16_t)esp_adc_cal_raw_to_voltage(raw, adc_chars);
+              }
             }
 
             ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
@@ -316,11 +322,12 @@ void scope_task(void *pv) {
 
               if (analog_trig_ch >= 0 && analog_trig_ch < ADC_CHANNELS_COUNT) {
                 uint16_t v = (uint16_t)val;
-                uint16_t prev = prev_analog_val[analog_trig_ch];
                 if (trigger_edge == RISING) {
-                  if (prev < analog_trig_level && v >= analog_trig_level) { trig = true; packet_ptr->trigger_flags |= (1 << 4); }
+                  if (!hysteresis_armed && v < (analog_trig_level - analog_trig_hyst)) hysteresis_armed = true;
+                  if (hysteresis_armed && v >= analog_trig_level) { trig = true; packet_ptr->trigger_flags |= (1 << 4); hysteresis_armed = false; }
                 } else {
-                  if (prev > analog_trig_level && v <= analog_trig_level) { trig = true; packet_ptr->trigger_flags |= (1 << 4); }
+                  if (!hysteresis_armed && v > (analog_trig_level + analog_trig_hyst)) hysteresis_armed = true;
+                  if (hysteresis_armed && v <= analog_trig_level) { trig = true; packet_ptr->trigger_flags |= (1 << 4); hysteresis_armed = false; }
                 }
               }
 
@@ -359,7 +366,10 @@ void scope_task(void *pv) {
 
                 for (int s = 0; s < SAMPLES_PER_PACKET; s++) {
                   int src = (start_idx + s) % CIRC_BUF_SIZE;
-                  for (int ch = 0; ch < ADC_CHANNELS_COUNT; ch++) packet_ptr->data[s * ADC_CHANNELS_COUNT + ch] = circ_buf[src * ADC_CHANNELS_COUNT + ch];
+                  for (int ch = 0; ch < ADC_CHANNELS_COUNT; ch++) {
+                    uint32_t raw = circ_buf[src * ADC_CHANNELS_COUNT + ch];
+                    packet_ptr->data[s * ADC_CHANNELS_COUNT + ch] = (uint16_t)esp_adc_cal_raw_to_voltage(raw, adc_chars);
+                  }
                 }
 
                 ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
