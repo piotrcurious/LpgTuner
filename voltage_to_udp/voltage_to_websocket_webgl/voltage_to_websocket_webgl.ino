@@ -38,6 +38,11 @@ volatile uint32_t last_trigger_event_time[TRIGGER_PINS_COUNT] = {0, 0, 0, 0};
 
 enum TriggerMode { MODE_INDEPENDENT, MODE_CAM_WHEEL };
 volatile TriggerMode currentMode = MODE_INDEPENDENT;
+volatile int trigger_edge = RISING; // RISING or FALLING
+volatile bool is_running = true;
+volatile bool trigger_armed = true; // For "Normal" mode
+volatile int run_mode = 0; // 0: Auto, 1: Normal, 2: Single
+volatile uint8_t trigger_mask = 0x0F; // All 4 pins by default
 volatile uint8_t cam_wheel_target = 0;
 
 // Data Buffering
@@ -86,12 +91,34 @@ void IRAM_ATTR handleTrigger1() { handleTrigger(1); }
 void IRAM_ATTR handleTrigger2() { handleTrigger(2); }
 void IRAM_ATTR handleTrigger3() { handleTrigger(3); }
 
+void updateInterrupts() {
+  for (int i = 0; i < TRIGGER_PINS_COUNT; i++) {
+    detachInterrupt(digitalPinToInterrupt(trigger_pins[i]));
+  }
+  attachInterrupt(digitalPinToInterrupt(trigger_pins[0]), handleTrigger0, trigger_edge);
+  attachInterrupt(digitalPinToInterrupt(trigger_pins[1]), handleTrigger1, trigger_edge);
+  attachInterrupt(digitalPinToInterrupt(trigger_pins[2]), handleTrigger2, trigger_edge);
+  attachInterrupt(digitalPinToInterrupt(trigger_pins[3]), handleTrigger3, trigger_edge);
+}
+
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
   if (type == WS_EVT_DATA) {
     AwsFrameInfo *info = (AwsFrameInfo*)arg;
     if (info->final && info->index == 0 && info->len == len) {
       if (len > 0 && data[0] == 'M') {
         currentMode = (data[1] == '1') ? MODE_CAM_WHEEL : MODE_INDEPENDENT;
+      } else if (len > 0 && data[0] == 'R') {
+        run_mode = data[1] - '0';
+        trigger_armed = true;
+      } else if (len > 0 && data[0] == 'F') {
+        is_running = (data[1] == '1');
+      } else if (len > 0 && data[0] == 'E') {
+        trigger_edge = (data[1] == '1') ? RISING : FALLING;
+        updateInterrupts();
+      } else if (len > 0 && data[0] == 'K') { // Trigger MasK
+        trigger_mask = data[1];
+      } else if (len > 0 && data[0] == 'T') { // force Trigger
+        trigger_occurred[0] = true;
       } else if (len > 0 && data[0] == 'S') {
         simulation_mode = (data[1] == '1');
       } else if (len > 0 && data[0] == 'N') {
@@ -151,7 +178,7 @@ void scope_task(void *pv) {
   uint32_t last_packet_time = micros();
 
   while (1) {
-    if (ws.count() == 0) {
+    if (ws.count() == 0 || !is_running) {
       vTaskDelay(pdMS_TO_TICKS(100));
       continue;
     }
@@ -184,10 +211,22 @@ void scope_task(void *pv) {
           packet_ptr->trigger_flags = (currentMode == MODE_CAM_WHEEL) ? (1 << 7) : 0;
 
           portENTER_CRITICAL(&trigger_mux);
-          for (int t = 0; t < TRIGGER_PINS_COUNT; t++) if (trigger_occurred[t]) { packet_ptr->trigger_flags |= (1 << t); trigger_occurred[t] = false; }
+          bool any_trigger = false;
+          for (int t = 0; t < TRIGGER_PINS_COUNT; t++) {
+            if (trigger_occurred[t]) {
+              packet_ptr->trigger_flags |= (1 << t);
+              trigger_occurred[t] = false;
+              if (trigger_mask & (1 << t)) any_trigger = true;
+            }
+          }
           portEXIT_CRITICAL(&trigger_mux);
 
-          ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
+          bool should_send = (run_mode == 0) || (run_mode > 0 && any_trigger && trigger_armed);
+
+          if (should_send) {
+            ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
+            if (run_mode == 2) trigger_armed = false; // Single shot
+          }
           sample_idx = 0;
         }
       }
@@ -218,10 +257,22 @@ void scope_task(void *pv) {
               packet_ptr->trigger_flags = (currentMode == MODE_CAM_WHEEL) ? (1 << 7) : 0;
 
               portENTER_CRITICAL(&trigger_mux);
-              for (int t = 0; t < TRIGGER_PINS_COUNT; t++) if (trigger_occurred[t]) { packet_ptr->trigger_flags |= (1 << t); trigger_occurred[t] = false; }
+              bool any_trigger = false;
+              for (int t = 0; t < TRIGGER_PINS_COUNT; t++) {
+                if (trigger_occurred[t]) {
+                  packet_ptr->trigger_flags |= (1 << t);
+                  trigger_occurred[t] = false;
+                  if (trigger_mask & (1 << t)) any_trigger = true;
+                }
+              }
               portEXIT_CRITICAL(&trigger_mux);
 
-              ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
+              bool should_send = (run_mode == 0) || (run_mode > 0 && any_trigger && trigger_armed);
+
+              if (should_send) {
+                ws.binaryAll((uint8_t*)packet_ptr, sizeof(ScopePacket));
+                if (run_mode == 2) trigger_armed = false; // Single shot
+              }
               sample_idx = 0;
             }
           }
