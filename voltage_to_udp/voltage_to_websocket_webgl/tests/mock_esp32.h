@@ -16,7 +16,8 @@
 // Arduino Mocks
 #define IRAM_ATTR
 #define RISING 1
-#define INPUT_PULLUP 2
+#define FALLING 2
+#define INPUT_PULLUP 3
 
 struct String : public std::string {
     String() : std::string() {}
@@ -40,6 +41,7 @@ inline uint32_t millis() { return 0; }
 inline uint32_t micros() { return 0; }
 void pinMode(int pin, int mode) {}
 void attachInterrupt(int pin, void (*fn)(), int mode) {}
+void detachInterrupt(int pin) {}
 int digitalPinToInterrupt(int pin) { return pin; }
 
 struct SerialMock {
