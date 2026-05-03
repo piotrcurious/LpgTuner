@@ -46,8 +46,10 @@ volatile uint8_t cam_wheel_target = 0;
 struct ScopePacket {
   uint32_t sequence;
   uint32_t timestamp;
-  uint16_t trigger_flags; // Aligned to 2 bytes
+  uint16_t trigger_flags;
   uint32_t free_heap;
+  uint16_t loop_time_us; // Execution time of one processing loop
+  uint16_t interval_us;  // Time between packet sends
   uint16_t data[SAMPLES_PER_PACKET * ADC_CHANNELS_COUNT];
 };
 #pragma pack(pop)
@@ -93,7 +95,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       } else if (len > 0 && data[0] == 'S') {
         simulation_mode = (data[1] == '1');
       } else if (len > 0 && data[0] == 'N') {
-        sim_noise_level = atoi((char*)data + 2);
+        sim_noise_level = atoi((char*)data + 1);
       } else if (len > 0 && data[0] == 'W') {
         String cmd = String((char*)data).substring(2);
         int sep = cmd.indexOf(';');
@@ -146,11 +148,15 @@ void scope_task(void *pv) {
   uint32_t sample_idx = 0;
   packet_ptr = (ScopePacket*)malloc(sizeof(ScopePacket));
 
+  uint32_t last_packet_time = micros();
+
   while (1) {
     if (ws.count() == 0) {
       vTaskDelay(pdMS_TO_TICKS(100));
       continue;
     }
+
+    uint32_t loop_start = micros();
 
     if (simulation_mode) {
       for (int i = 0; i < 64; i++) {
@@ -168,9 +174,13 @@ void scope_task(void *pv) {
 
         sample_idx++;
         if (sample_idx >= SAMPLES_PER_PACKET) {
+          uint32_t now = micros();
           packet_ptr->sequence = packet_seq++;
-          packet_ptr->timestamp = micros();
+          packet_ptr->timestamp = now;
           packet_ptr->free_heap = ESP.getFreeHeap();
+          packet_ptr->loop_time_us = (uint16_t)(micros() - loop_start);
+          packet_ptr->interval_us = (uint16_t)(now - last_packet_time);
+          last_packet_time = now;
           packet_ptr->trigger_flags = (currentMode == MODE_CAM_WHEEL) ? (1 << 7) : 0;
 
           portENTER_CRITICAL(&trigger_mux);
@@ -198,9 +208,13 @@ void scope_task(void *pv) {
           if (chan_idx == ADC_CHANNELS_COUNT - 1) {
             sample_idx++;
             if (sample_idx >= SAMPLES_PER_PACKET) {
+              uint32_t now = micros();
               packet_ptr->sequence = packet_seq++;
-              packet_ptr->timestamp = micros();
+              packet_ptr->timestamp = now;
               packet_ptr->free_heap = ESP.getFreeHeap();
+              packet_ptr->loop_time_us = (uint16_t)(micros() - loop_start);
+              packet_ptr->interval_us = (uint16_t)(now - last_packet_time);
+              last_packet_time = now;
               packet_ptr->trigger_flags = (currentMode == MODE_CAM_WHEEL) ? (1 << 7) : 0;
 
               portENTER_CRITICAL(&trigger_mux);

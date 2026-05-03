@@ -17,7 +17,7 @@ const char* html_index = R"rawliteral(
     .btn { background: #333; color: #eee; border: 1px solid #666; padding: 4px 8px; cursor: pointer; margin-right: 5px; font-family: inherit; font-size: 11px; }
     .btn:hover { background: #555; }
     .btn.active { background: #006600; border-color: #00ff00; }
-    .stat-overlay { position: absolute; bottom: 10px; right: 15px; color: #008800; font-size: 12px; text-shadow: 1px 1px #000; pointer-events: none; text-align: right; }
+    .stat-overlay { position: absolute; bottom: 10px; right: 15px; color: #008800; font-size: 11px; text-shadow: 1px 1px #000; pointer-events: none; text-align: right; line-height: 1.4; }
     .trigger-indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #333; margin-left: 5px; }
     .trigger-active { background: #f00; box-shadow: 0 0 5px #f00; }
     h2 { margin: 0 0 10px 0; font-size: 14px; color: #aaa; border-bottom: 1px solid #333; padding-bottom: 5px; }
@@ -66,7 +66,7 @@ const char* html_index = R"rawliteral(
   <div class="stat-overlay" id="stats">
     LINK: DOWN | FPS: 0 | SEQ: 0<br>
     HEAP: 0 | LOSS: 0 | UP: 0s<br>
-    CLIENTS: 0
+    LOAD: 0% | JITTER: 0us
   </div>
 
   <script id="vs" type="x-shader/x-vertex">
@@ -280,9 +280,11 @@ const char* html_index = R"rawliteral(
         if (typeof e.data === 'string') return;
         const view = new DataView(e.data);
         const seq = view.getUint32(0, true);
-        const trig = view.getUint16(8, true); // Match V2 struct offset 8
-        const heap = view.getUint32(10, true); // Match V2 struct offset 10
-        const data = new Uint16Array(e.data, 14, SAMPLES * CHANNELS); // Match V2 struct offset 14
+        const trig = view.getUint16(8, true);
+        const heap = view.getUint32(10, true);
+        const loopTime = view.getUint16(14, true);
+        const interval = view.getUint16(16, true);
+        const data = new Uint16Array(e.data, 18, SAMPLES * CHANNELS);
 
         if(lastSeq !== -1 && seq !== lastSeq + 1) lossCount += (seq - lastSeq - 1);
         lastSeq = seq;
@@ -295,9 +297,11 @@ const char* html_index = R"rawliteral(
         if(now - lastTime > 1000) {
           fps = pktCount; pktCount = 0; lastTime = now;
           const lossClass = (lossCount > 100) ? "loss-critical" : "";
+          const load = Math.round((loopTime / interval) * 100);
           document.getElementById('stats').innerHTML = `
             LINK: UP | FPS: ${fps} | SEQ: ${seq}<br>
-            HEAP: ${heap} | <span class="${lossClass}">LOSS: ${lossCount}</span> | UP: ${Math.floor((Date.now()-startTime)/1000)}s
+            HEAP: ${heap} | <span class="${lossClass}">LOSS: ${lossCount}</span> | UP: ${Math.floor((Date.now()-startTime)/1000)}s<br>
+            LOAD: ${load}% | JITTER: ${Math.abs(interval - 33333)}us
           `;
           document.getElementById('mode-bit').innerText = (trig & (1 << 7)) ? "[CAM MODE]" : "";
         }
