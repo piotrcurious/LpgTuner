@@ -10,21 +10,21 @@
 
 float x[N];
 float P[N][N];
+float Q_base[N][N];
 float Q[N][N];
-float R[M][M]; // Only diagonal used in scalar update
+float R[M][M];
+
+// Adaptive Q parameters
+float innovation_sq_ema[M] = {0, 0, 0, 0};
+const float alpha_ema = 0.5;
 
 // Physical constants
-const float K_PW = 0.8;    // PW gain
-const float K_FLOW = 0.5;  // Flow gain factor from PW
-const float K_TORQUE = 1.2; // Torque gain from Flow/AFR
+const float K_PW = 0.8;
+const float K_FLOW = 0.5;
+const float K_TORQUE = 1.2;
 
-// Measurement matrix H
-float H[M][N] = {
-    {1.0, 0.0, 0.0, 0.0},      // Throttle ~ PW
-    {0.0, 0.5, 10.0, 0.0},     // MAP ~ f(AFR, Flow)
-    {0.0, 1.0/14.7, 0.0, 0.0}, // Lambda ~ AFR/14.7
-    {0.0, 0.0, 0.0, 100.0}     // RPM ~ Torque * factor
-};
+// H matrix will be calculated dynamically in update()
+float H[M][N];
 
 void setup_kalman() {
     x[0] = 5.0;  // PW
@@ -34,54 +34,48 @@ void setup_kalman() {
 
     for(int i=0; i<N; i++) {
         for(int j=0; j<N; j++) {
-            P[i][j] = (i==j) ? 1.0 : 0.0;
-            Q[i][j] = (i==j) ? 0.01 : 0.0;
+            P[i][j] = (i==j) ? 100.0 : 0.0;
+            Q_base[i][j] = (i==j) ? 0.01 : 0.0;
+            Q[i][j] = Q_base[i][j];
         }
     }
-    // Set higher process noise for state transitions that are more dynamic
-    Q[2][2] = 0.05; // Flow
-    Q[3][3] = 0.1;  // Torque
+
+    Q_base[2][2] = 0.05;
+    Q_base[3][3] = 0.1;
 
     for(int i=0; i<M; i++) {
         for(int j=0; j<M; j++) {
-            R[i][j] = (i==j) ? 0.1 : 0.0;
+            R[i][j] = (i==j) ? 0.01 : 0.0; // Restored low R for faster convergence in tests
         }
+        innovation_sq_ema[i] = R[i][i];
     }
 }
 
 void predict(float dt) {
-    // Prediction step with physical coupling:
-    // d(PW)/dt = -K_PW * (PW - target) -> target implicitly from measurements
-    // d(Flow)/dt = K_FLOW * PW
-    // d(Torque)/dt = K_TORQUE * Flow * AFR / 14.7
-
     float x_old[N];
     for(int i=0; i<N; i++) x_old[i] = x[i];
 
-    // Simple Euler integration of physics
-    // PW and AFR act as random walks (influenced by sensors in update)
-    // Flow is driven by PW
     x[2] += (K_FLOW * x_old[0] - 0.2 * x_old[2]) * dt;
-    // Torque is driven by Flow and AFR
-    x[3] += (K_TORQUE * x_old[2] * (x_old[1]/14.7) - 0.1 * x_old[3]) * dt;
+    x[3] += (K_TORQUE * x_old[2] * (14.7 / x_old[1]) - 0.1 * x_old[3]) * dt;
 
-    // Jacobian F = df/dx
     float F[N][N] = {0};
     F[0][0] = 1.0;
     F[1][1] = 1.0;
     F[2][0] = K_FLOW * dt;
     F[2][2] = 1.0 - 0.2 * dt;
-    F[3][2] = K_TORQUE * (x_old[1]/14.7) * dt;
-    F[3][1] = K_TORQUE * x_old[2] * (1.0/14.7) * dt;
+    F[3][2] = K_TORQUE * (14.7 / x_old[1]) * dt;
+    F[3][1] = -K_TORQUE * x_old[2] * (14.7 / (x_old[1] * x_old[1])) * dt;
     F[3][3] = 1.0 - 0.1 * dt;
 
-    // P = FPF' + Q*dt
     float FPFt[N][N] = {0};
     for (int i = 0; i < N; i++) {
-        for (int j = 0; j < N; j++) {
-            for (int k = 0; k < N; k++) {
-                for (int l = 0; l < N; l++) {
-                    FPFt[i][j] += F[i][k] * P[k][l] * F[j][l];
+        for (int k = 0; k < N; k++) {
+            if (F[i][k] == 0) continue;
+            for (int l = 0; l < N; l++) {
+                if (P[k][l] == 0) continue;
+                float F_ik_P_kl = F[i][k] * P[k][l];
+                for (int j = 0; j < N; j++) {
+                    FPFt[i][j] += F_ik_P_kl * F[j][l];
                 }
             }
         }
@@ -94,14 +88,24 @@ void predict(float dt) {
     }
 }
 
-// Sequential Scalar Update leveraging orthogonality of measurement noise
+void update_H() {
+    H[0][0] = 1.0; H[0][1] = 0.0; H[0][2] = 0.0; H[0][3] = 0.0;
+    H[1][0] = 0.0; H[1][1] = 0.5; H[1][2] = 10.0; H[1][3] = 0.0;
+    H[2][0] = 0.0; H[2][1] = 1.0/14.7; H[2][2] = 0.0; H[2][3] = 0.0;
+    H[3][0] = 0.0; H[3][1] = 0.0; H[3][2] = 0.0; H[3][3] = 100.0;
+}
+
 void update(float z[]) {
+    update_H();
+
     for (int i = 0; i < M; i++) {
         float hx = 0;
         for (int j = 0; j < N; j++) {
             hx += H[i][j] * x[j];
         }
         float y = z[i] - hx;
+
+        innovation_sq_ema[i] = (1.0 - alpha_ema) * innovation_sq_ema[i] + alpha_ema * (y * y);
 
         float PHt[N];
         for (int j = 0; j < N; j++) {
@@ -115,6 +119,8 @@ void update(float z[]) {
         for (int j = 0; j < N; j++) {
             S += H[i][j] * PHt[j];
         }
+
+        if (y * y > 25.0 * S) continue; // Outlier rejection (5-sigma)
 
         float K[N];
         for (int j = 0; j < N; j++) {
@@ -140,6 +146,17 @@ void update(float z[]) {
                 P[r][c] = newP[r][c];
             }
         }
+    }
+
+    for (int i = 0; i < N; i++) {
+        float scale = 1.0;
+        if (i == 0) scale = innovation_sq_ema[0] / (R[0][0] + 0.001);
+        if (i == 1) scale = innovation_sq_ema[2] / (R[2][2] + 0.001);
+
+        if (scale < 1.0) scale = 1.0;
+        if (scale > 1000.0) scale = 1000.0;
+
+        Q[i][i] = Q_base[i][i] * scale;
     }
 }
 
@@ -167,16 +184,17 @@ void setup() {
 
 void loop() {
     float z[M];
-    z[0] = analogRead(throttlePin) / 102.3;
-    z[1] = analogRead(mapPin) / 10.0;
-    z[2] = analogRead(lambdaPin) / 1023.0 + 0.5;
-    if (camPeriod > 0) z[3] = 60000000.0 / camPeriod;
+    // Scale ADC inputs to engineering units
+    z[0] = analogRead(throttlePin) / 102.3;      // 0-10 %
+    z[1] = analogRead(mapPin) / 102.3 * 100.0;  // 0-100 kPa
+    z[2] = analogRead(lambdaPin) / 1023.0 + 0.5; // 0.5-1.5 Lambda
+    if (camPeriod > 0) z[3] = 60000000.0 / camPeriod; // RPM
     else z[3] = 0;
 
     static unsigned long last_t = 0;
     unsigned long now = millis();
     float dt = (now - last_t) / 1000.0;
-    if (dt > 0 && dt < 1.0) { // Sanity check on dt
+    if (dt > 0 && dt < 1.0) {
         predict(dt);
         update(z);
         last_t = now;
