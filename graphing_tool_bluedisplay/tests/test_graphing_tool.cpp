@@ -129,10 +129,38 @@ void test_throttling() {
     assert(drawTextCalled == true);
 }
 
+void test_debounce() {
+    std::cout << "Testing ISR debounce..." << std::endl;
+    mock_arduino_init();
+    lastCamTime = 0;
+    lastValidCamTime = 0;
+    camPeriod = 0;
+
+    set_micros(100000);
+    camISR();
+    assert(lastCamTime == 100000);
+    assert(lastValidCamTime == 100000);
+
+    // This pulse is too fast (1ms < 4ms)
+    set_micros(101000);
+    camISR();
+    assert(lastCamTime == 100000);
+    assert(lastValidCamTime == 100000);
+    assert(camPeriod == 0);
+
+    // This pulse is okay (5ms > 4ms)
+    set_micros(105000);
+    camISR();
+    assert(lastCamTime == 105000);
+    assert(lastValidCamTime == 105000);
+    assert(camPeriod == 5000);
+}
+
 int main() {
     test_sensor_readings();
     test_timeouts();
     test_throttling();
+    test_debounce();
     std::cout << "All tests passed!" << std::endl;
     return 0;
 }
