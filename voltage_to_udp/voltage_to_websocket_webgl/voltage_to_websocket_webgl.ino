@@ -157,8 +157,10 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
 }
 
 void setup_adc() {
-  adc_chars = (esp_adc_cal_characteristics_t *)calloc(1, sizeof(esp_adc_cal_characteristics_t));
-  esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 1100, adc_chars);
+  if (!adc_chars) {
+    adc_chars = (esp_adc_cal_characteristics_t *)calloc(1, sizeof(esp_adc_cal_characteristics_t));
+    esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 1100, adc_chars);
+  }
 
   adc_continuous_handle_cfg_t handle_cfg = {
     .max_store_buf_size = ADC_READ_BUF_BYTES,
@@ -199,6 +201,8 @@ void scope_task(void *pv) {
   uint32_t trigger_at_idx = 0;
   uint32_t samples_after_trigger = 0;
   uint16_t prev_analog_val[ADC_CHANNELS_COUNT] = {0,0,0,0};
+  uint16_t temp_row[ADC_CHANNELS_COUNT] = {0};
+  uint8_t row_mask = 0;
 
   while (1) {
     if (adc_needs_reconfig) {
@@ -219,15 +223,25 @@ void scope_task(void *pv) {
         uint16_t current_samples[ADC_CHANNELS_COUNT];
         for (int ch = 0; ch < ADC_CHANNELS_COUNT; ch++) {
           float val = 0;
-          if (ch == 0) val = 2048 + 1200 * sin(sim_phase); // CH1: Engine Speed/Phase
+          if (ch == 0) {
+            // CH1: Crank 36-1 tooth simulation
+            float tooth_phase = fmod(sim_phase, 2.0 * PI);
+            if (tooth_phase > (2.0 * PI * 35.0 / 36.0)) val = 2048; // Missing tooth gap
+            else val = 2048 + 1200 * sin(sim_phase * 36.0);
+          }
           else if (ch == 1) val = 1500 + 800 * sin(sim_phase * 0.7); // CH2: Lambda/O2
           else if (ch == 2) val = (fmod(sim_phase, 4.0 * PI) / (4.0 * PI)) * 3800; // CH3: TPS
-          else if (ch == 3) val = (sin(sim_phase * 4.0) > 0.95) ? 3800 : 400; // CH4: Ignition/Crank Pulse
+          else if (ch == 3) val = (sin(sim_phase * 2.0) > 0.95) ? 3800 : 400; // CH4: Ignition (2 pulses/rev)
+
           if (sim_noise_level > 0) val += (random(sim_noise_level * 15) - (sim_noise_level * 7));
           current_samples[ch] = (uint16_t)constrain(val, 0, 4095);
           circ_buf[circ_write_idx * ADC_CHANNELS_COUNT + ch] = current_samples[ch];
         }
-        sim_phase += 0.05;
+        // sim_phase increment adjusted for 50kHz sample rate
+        // 1.0 rad/s = 0.15 Hz approx. At 50kHz, 0.05 per sample is 2500 rad/sec = 400Hz.
+        // Let's target 3000 RPM = 50 Hz base freq.
+        // 50Hz * 2PI = 314 rad/s. Per sample at 50kHz: 314 / 50000 = 0.00628
+        sim_phase += (2.0 * PI * 50.0 / (float)adc_sample_freq);
 
         if (!triggered) {
           bool trig = false;
@@ -309,9 +323,16 @@ void scope_task(void *pv) {
           int chan_idx = -1;
           for(int j=0; j<ADC_CHANNELS_COUNT; j++) if(adc_channels[j] == (adc_channel_t)chan) { chan_idx = j; break; }
           if(chan_idx == -1) continue;
-          circ_buf[circ_write_idx * ADC_CHANNELS_COUNT + chan_idx] = (uint16_t)val;
 
-          if (chan_idx == ADC_CHANNELS_COUNT - 1) {
+          temp_row[chan_idx] = (uint16_t)val;
+          row_mask |= (1 << chan_idx);
+
+          if (row_mask == 0x0F) { // All 4 channels present
+            for(int ch=0; ch<ADC_CHANNELS_COUNT; ch++) {
+              circ_buf[circ_write_idx * ADC_CHANNELS_COUNT + ch] = temp_row[ch];
+            }
+            row_mask = 0;
+
             if (!triggered) {
               bool trig = false;
               portENTER_CRITICAL(&trigger_mux);
@@ -321,7 +342,7 @@ void scope_task(void *pv) {
               portEXIT_CRITICAL(&trigger_mux);
 
               if (analog_trig_ch >= 0 && analog_trig_ch < ADC_CHANNELS_COUNT) {
-                uint16_t v = (uint16_t)val;
+                uint16_t v = temp_row[analog_trig_ch];
                 if (trigger_edge == RISING) {
                   if (!hysteresis_armed && v < (analog_trig_level - analog_trig_hyst)) hysteresis_armed = true;
                   if (hysteresis_armed && v >= analog_trig_level) { trig = true; packet_ptr->trigger_flags |= (1 << 4); hysteresis_armed = false; }
@@ -340,10 +361,6 @@ void scope_task(void *pv) {
               }
             }
 
-            for(int ch=0; ch<ADC_CHANNELS_COUNT; ch++) {
-               if(ch == chan_idx) prev_analog_val[ch] = (uint16_t)val;
-               else prev_analog_val[ch] = circ_buf[circ_write_idx * ADC_CHANNELS_COUNT + ch];
-            }
             circ_write_idx = (circ_write_idx + 1) % CIRC_BUF_SIZE;
 
             if (triggered) {

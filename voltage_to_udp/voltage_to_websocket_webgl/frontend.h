@@ -199,6 +199,9 @@ const char* html_index = R"rawliteral(
     let analogTrigCh = -1;
     let analogTrigLevel = 2048;
 
+    let metricsEMA = Array.from({length: CHANNELS}, () => ({ pp: 0, rms: 0 }));
+    const EMA_ALPHA = 0.2;
+
     let history = [];
     const xCoords = new Float32Array(SAMPLES);
     for(let i=0; i<SAMPLES; i++) xCoords[i] = (i / (SAMPLES-1)) * 2.0 - 1.0;
@@ -437,11 +440,11 @@ const char* html_index = R"rawliteral(
         if (mathOp !== 'none') {
            const mathData = new Float32Array(SAMPLES);
            for(let i=0; i<SAMPLES; i++) {
-              const v1 = entry.data[i * CHANNELS + 0];
-              const v2 = entry.data[i * CHANNELS + 1];
+              const v1 = entry.data[i * CHANNELS + 0]; // mV
+              const v2 = entry.data[i * CHANNELS + 1]; // mV
               if (mathOp === 'add') mathData[i] = (v1 + v2) / 2;
-              else if (mathOp === 'sub') mathData[i] = (v1 - v2) + 2048;
-              else if (mathOp === 'mul') mathData[i] = (v1 * v2) / 4095;
+              else if (mathOp === 'sub') mathData[i] = (v1 - v2) + 1650;
+              else if (mathOp === 'mul') mathData[i] = (v1 * v2) / 3300.0;
            }
            const mathBuf = gl.createBuffer();
            gl.bindBuffer(gl.ARRAY_BUFFER, mathBuf);
@@ -467,12 +470,18 @@ const char* html_index = R"rawliteral(
               if(val < min) min = val;
               if(val > max) max = val;
               const v = val / 1000.0;
-              sum += v;
               sumSq += v*v;
             }
+
+            const pp = (max - min) / 1000.0;
+            const rms = Math.sqrt(sumSq / SAMPLES);
+
+            metricsEMA[c].pp = metricsEMA[c].pp * (1 - EMA_ALPHA) + pp * EMA_ALPHA;
+            metricsEMA[c].rms = metricsEMA[c].rms * (1 - EMA_ALPHA) + rms * EMA_ALPHA;
+
             document.getElementById('v'+c).innerText = (entry.data[0 * CHANNELS + c] / 1000.0).toFixed(2);
-            document.getElementById('pp'+c).innerText = ((max - min) / 1000.0).toFixed(2);
-            document.getElementById('rms'+c).innerText = Math.sqrt(sumSq / SAMPLES).toFixed(2);
+            document.getElementById('pp'+c).innerText = metricsEMA[c].pp.toFixed(2);
+            document.getElementById('rms'+c).innerText = metricsEMA[c].rms.toFixed(2);
 
             const tInd = document.getElementById('t'+c);
             if (entry.trig & (1 << c)) {
