@@ -11,6 +11,7 @@
 #define MAX_RPM 7000
 #define MAX_PW 20.0
 #define TIMEOUT_US 500000 // 0.5s timeout for pulses
+#define MIN_CAM_PERIOD_US 4000 // Max ~15000 RPM equivalent for debounce
 
 // Pins
 const int throttlePin = A0;
@@ -31,9 +32,11 @@ float lastDrawnRpm = -1;
 float lastDrawnLoad = -1;
 unsigned long lastDrawTime = 0;
 unsigned long lastTextUpdateTime = 0;
+bool simulationMode = false;
 
 volatile unsigned long lastCamTime = 0;
 volatile unsigned long camPeriod = 0;
+volatile unsigned long lastValidCamTime = 0;
 volatile unsigned long injectorOnTime = 0;
 volatile unsigned long pulseWidthUs = 0;
 volatile unsigned long lastInjectorTime = 0;
@@ -48,14 +51,20 @@ int chartWidth, chartHeight, chartXOffset, chartYOffset;
 #define COLOR_GREEN 0x07E0
 
 BDButton clearButton;
+BDButton simButton;
 void initDisplay();
 void drawGui();
 void handleClear(BDButton *aButton, int16_t aValue);
+void handleSim(BDButton *aButton, int16_t aValue);
 
 void camISR() {
     unsigned long now = micros();
-    if (lastCamTime > 0) camPeriod = now - lastCamTime;
-    lastCamTime = now;
+    unsigned long period = now - lastValidCamTime;
+    if (lastValidCamTime == 0 || period > MIN_CAM_PERIOD_US) {
+        if (lastValidCamTime > 0) camPeriod = period;
+        lastValidCamTime = now;
+        lastCamTime = now; // For timeout detection
+    }
 }
 
 void injectorISR() {
@@ -74,6 +83,16 @@ void injectorISR() {
 }
 
 void readSensors() {
+    if (simulationMode) {
+        static float simPhase = 0;
+        simPhase += 0.05;
+        rpm = 1000 + 4000 * (0.5 + 0.5 * sin(simPhase));
+        engineLoad = 20 + 60 * (0.5 + 0.5 * cos(simPhase * 0.7));
+        pulseWidthMs = (engineLoad / 100.0) * 15.0 + 2.0;
+        lambda = 0.9 + 0.2 * (0.5 + 0.5 * sin(simPhase * 1.3));
+        return;
+    }
+
     unsigned long now = micros();
 
     throttle = analogRead(throttlePin) / 10.23; // 0-100%
@@ -113,36 +132,44 @@ void drawChart() {
     lastDrawnLoad = engineLoad;
 
 #ifdef UNIT_TEST
-    int x = arduino_map(arduino_constrain(rpm, 0, MAX_RPM), 0, MAX_RPM, chartXOffset, chartXOffset + chartWidth);
-    int y = arduino_map(arduino_constrain(engineLoad, 0, 100), 0, 100, chartYOffset + chartHeight, chartYOffset);
-
-    // Color mapping: Blue (short) -> Green (mid) -> Red (long)
-    uint16_t color;
-    if (pulseWidthMs < (MAX_PW / 2.0)) {
-        int g = arduino_map(pulseWidthMs * 100, 0, (MAX_PW / 2.0) * 100, 0, 63);
-        int b = 31 - arduino_map(pulseWidthMs * 100, 0, (MAX_PW / 2.0) * 100, 0, 31);
-        color = (g << 5) | b;
-    } else {
-        int r = arduino_map((pulseWidthMs - MAX_PW / 2.0) * 100, 0, (MAX_PW / 2.0) * 100, 0, 31);
-        int g = 63 - arduino_map((pulseWidthMs - MAX_PW / 2.0) * 100, 0, (MAX_PW / 2.0) * 100, 0, 63);
-        color = (r << 11) | (g << 5);
-    }
+    float rpm_c = arduino_constrain(rpm, 0, MAX_RPM);
+    float load_c = arduino_constrain(engineLoad, 0, 100);
+    float pw_c = arduino_constrain(pulseWidthMs, 0, MAX_PW);
 #else
-    int x = map(constrain(rpm, 0, MAX_RPM), 0, MAX_RPM, chartXOffset, chartXOffset + chartWidth);
-    int y = map(constrain(engineLoad, 0, 100), 0, 100, chartYOffset + chartHeight, chartYOffset);
+    float rpm_c = constrain(rpm, 0, MAX_RPM);
+    float load_c = constrain(engineLoad, 0, 100);
+    float pw_c = constrain(pulseWidthMs, 0, MAX_PW);
+#endif
+
+#ifdef UNIT_TEST
+    int x = arduino_map(rpm_c, 0, MAX_RPM, chartXOffset, chartXOffset + chartWidth);
+    int y = arduino_map(load_c, 0, 100, chartYOffset + chartHeight, chartYOffset);
+#else
+    int x = map(rpm_c, 0, MAX_RPM, chartXOffset, chartXOffset + chartWidth);
+    int y = map(load_c, 0, 100, chartYOffset + chartHeight, chartYOffset);
+#endif
 
     // Color mapping: Blue (short) -> Green (mid) -> Red (long)
     uint16_t color;
-    if (pulseWidthMs < (MAX_PW / 2.0)) {
-        int g = map(pulseWidthMs * 100, 0, (MAX_PW / 2.0) * 100, 0, 63);
-        int b = 31 - map(pulseWidthMs * 100, 0, (MAX_PW / 2.0) * 100, 0, 31);
+    if (pw_c < (MAX_PW / 2.0)) {
+#ifdef UNIT_TEST
+        int g = arduino_map(pw_c * 100, 0, (MAX_PW / 2.0) * 100, 0, 63);
+        int b = 31 - arduino_map(pw_c * 100, 0, (MAX_PW / 2.0) * 100, 0, 31);
+#else
+        int g = map(pw_c * 100, 0, (MAX_PW / 2.0) * 100, 0, 63);
+        int b = 31 - map(pw_c * 100, 0, (MAX_PW / 2.0) * 100, 0, 31);
+#endif
         color = (g << 5) | b;
     } else {
-        int r = map((pulseWidthMs - MAX_PW / 2.0) * 100, 0, (MAX_PW / 2.0) * 100, 0, 31);
-        int g = 63 - map((pulseWidthMs - MAX_PW / 2.0) * 100, 0, (MAX_PW / 2.0) * 100, 0, 63);
+#ifdef UNIT_TEST
+        int r = arduino_map((pw_c - MAX_PW / 2.0) * 100, 0, (MAX_PW / 2.0) * 100, 0, 31);
+        int g = 63 - arduino_map((pw_c - MAX_PW / 2.0) * 100, 0, (MAX_PW / 2.0) * 100, 0, 63);
+#else
+        int r = map((pw_c - MAX_PW / 2.0) * 100, 0, (MAX_PW / 2.0) * 100, 0, 31);
+        int g = 63 - map((pw_c - MAX_PW / 2.0) * 100, 0, (MAX_PW / 2.0) * 100, 0, 63);
+#endif
         color = (r << 11) | (g << 5);
     }
-#endif
 
     BlueDisplay1.drawPixel(x, y, color);
     // Draw a small 2x2 square for better visibility
@@ -166,7 +193,7 @@ void drawCurrentPulseWidth() {
     dtostrf(pulseWidthMs, 4, 2, pwBuf);
     dtostrf(lambda, 4, 2, lambdaBuf);
 #endif
-    sprintf(buf, "RPM: %d  PW: %s ms  L: %s  ", (int)rpm, pwBuf, lambdaBuf);
+    sprintf(buf, "RPM: %d  PW: %s ms  L: %s  %s", (int)rpm, pwBuf, lambdaBuf, simulationMode ? "[SIM]" : "");
     BlueDisplay1.drawText(10, displayHeight - 20, buf, TEXT_SIZE_11, COLOR_BLACK, COLOR_WHITE);
 }
 
@@ -201,7 +228,8 @@ void initDisplay() {
     chartXOffset = 40;
     chartYOffset = 30;
 
-    clearButton.init(displayWidth - 70, 5, 60, 25, COLOR_RED, "Clear", TEXT_SIZE_11, 0, 0, &handleClear);
+    clearButton.init(displayWidth - 140, 5, 60, 25, COLOR_RED, "Clear", TEXT_SIZE_11, 0, 0, &handleClear);
+    simButton.init(displayWidth - 70, 5, 60, 25, COLOR_BLUE, "Sim", TEXT_SIZE_11, 0, 0, &handleSim);
 }
 
 void drawGui() {
@@ -211,14 +239,22 @@ void drawGui() {
 
     // Draw Axis Labels
     BlueDisplay1.drawText(chartXOffset + chartWidth / 2 - 20, chartYOffset + chartHeight + 5, "RPM", TEXT_SIZE_09, COLOR_BLACK, COLOR_WHITE);
-    BlueDisplay1.drawText(5, chartYOffset + chartHeight / 2, "L", TEXT_SIZE_09, COLOR_BLACK, COLOR_WHITE);
-    BlueDisplay1.drawText(5, chartYOffset + chartHeight / 2 + 10, "O", TEXT_SIZE_09, COLOR_BLACK, COLOR_WHITE);
-    BlueDisplay1.drawText(5, chartYOffset + chartHeight / 2 + 20, "A", TEXT_SIZE_09, COLOR_BLACK, COLOR_WHITE);
-    BlueDisplay1.drawText(5, chartYOffset + chartHeight / 2 + 30, "D", TEXT_SIZE_09, COLOR_BLACK, COLOR_WHITE);
+
+    // Vertical "LOAD" label
+    BlueDisplay1.drawText(10, chartYOffset + chartHeight / 2 - 20, "L", TEXT_SIZE_09, COLOR_BLACK, COLOR_WHITE);
+    BlueDisplay1.drawText(10, chartYOffset + chartHeight / 2 - 10, "O", TEXT_SIZE_09, COLOR_BLACK, COLOR_WHITE);
+    BlueDisplay1.drawText(10, chartYOffset + chartHeight / 2, "A", TEXT_SIZE_09, COLOR_BLACK, COLOR_WHITE);
+    BlueDisplay1.drawText(10, chartYOffset + chartHeight / 2 + 10, "D", TEXT_SIZE_09, COLOR_BLACK, COLOR_WHITE);
 
     clearButton.drawButton();
+    simButton.drawButton();
 }
 
 void handleClear(BDButton *aButton, int16_t aValue) {
+    drawGui();
+}
+
+void handleSim(BDButton *aButton, int16_t aValue) {
+    simulationMode = !simulationMode;
     drawGui();
 }
