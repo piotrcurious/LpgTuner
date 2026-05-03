@@ -2,6 +2,7 @@
 #include <map>
 
 MockSerial Serial;
+BlueDisplay BlueDisplay1;
 
 static unsigned long _millis = 0;
 static unsigned long _micros = 0;
