@@ -57,6 +57,11 @@ int digitalPinToInterrupt(int pin);
 void analogWrite(int pin, int value);
 
 void mock_arduino_init();
+#define IRAM_ATTR
+
+void interrupts();
+void noInterrupts();
+
 void set_analog_read(int pin, int value);
 void set_digital_read(int pin, int value);
 void set_millis(unsigned long ms);

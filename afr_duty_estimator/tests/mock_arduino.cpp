@@ -29,8 +29,12 @@ int digitalRead(int pin) {
     return _digitalValues[pin];
 }
 
+static void (*_interruptFuncs[32])() = {nullptr};
+
 void pinMode(int pin, int mode) {}
-void attachInterrupt(int pin, void (*func)(), int mode) {}
+void attachInterrupt(int pin, void (*func)(), int mode) {
+    if (pin < 32) _interruptFuncs[pin] = func;
+}
 int digitalPinToInterrupt(int pin) { return pin; }
 void analogWrite(int pin, int value) {}
 
@@ -45,8 +49,15 @@ void set_analog_read(int pin, int value) {
     _analogValues[pin] = value;
 }
 
+void interrupts() {}
+void noInterrupts() {}
+
 void set_digital_read(int pin, int value) {
+    bool changed = (_digitalValues[pin] != value);
     _digitalValues[pin] = value;
+    if (changed && pin < 32 && _interruptFuncs[pin]) {
+        _interruptFuncs[pin]();
+    }
 }
 
 void set_millis(unsigned long ms) {
